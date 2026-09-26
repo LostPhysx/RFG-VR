@@ -1,0 +1,14 @@
+# game copy and large third-party tools
+/game/
+/tools/re/
+# build output
+build/
+# Ghidra project databases (regenerate with re/ghidra/run-analyze.cmd) and script output
+/re/ghidra/*.gpr
+/re/ghidra/*.rep/
+/re/ghidra/*.txt
+/re/captures/
+# third-party reference code (mixed or missing licenses): reference only, not redistributed
+/research/downloads/
+# runtime logs
+*.log
