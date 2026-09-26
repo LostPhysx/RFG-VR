@@ -3,6 +3,10 @@
 A VR mod for **Red Faction Guerrilla Re-Mars-tered** (Steam) using OpenXR: stereo 3D with 6-DOF
 head tracking.
 
+> [!WARNING]
+> **AI-generated content.** The code and documentation of this project are 100% AI-generated
+> (Claude Code by Anthropic). Despite thorough testing, you use this mod at your own risk.
+
 **Third person only.** The game is played in its normal third-person view, seen in stereo 3D, with
 mouse/keyboard or gamepad. Motion controllers and a first-person mode are not implemented yet.
 
