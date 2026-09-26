@@ -64,6 +64,13 @@ constexpr uintptr_t kCameraUpdateVa = 0x6DFFA0;
 constexpr uintptr_t kRealOrientOff = 0x50;  // matrix real_orient (rfg_camera, rows: right, up, forward)
 constexpr uintptr_t kLookPitchVa = 0x01DE4D70;  // float lookaround pitch (rad)
 
+// Vehicle camera: CAMERA_FREE_MODE (0), update at 0x6D9780. Vertical look input accumulates into
+// free_mode_params user_elev (stick / relative mouse, rfg_camera+0x13C+0x34) and the absolute-mouse
+// pitch (+0xC8); the update hands them to its core FUN_006d7180 at this call, then applies them.
+constexpr uintptr_t kFreeCamCoreCallVa = 0x6DA006;
+constexpr uintptr_t kFreeCamUserElevVa = 0x01DE4CC0;   // float user_elev
+constexpr uintptr_t kFreeCamMousePitchVa = 0x01DE4D54;  // float mouse pitch (absolute mouse mode)
+
 // Partial rl_camera (sizeof 0x5C0), offsets from FUN_00520d70 (perspective setup).
 struct rl_camera {
     uint8_t pad00[0x2C];
@@ -86,6 +93,7 @@ SafetyHookInline g_swapchainResize;
 SafetyHookInline g_shakeEval;
 SafetyHookInline g_thirdPerson;
 SafetyHookInline g_cameraUpdate;
+SafetyHookMid g_freeCamPitch;
 
 // Head aim: real_orient holds game yaw * head orientation between camera updates. The game's own
 // orientation is kept here, restored before the next update and used as the base for rendering.
@@ -139,6 +147,12 @@ void __cdecl hkMainViewSetup(void* arg) {
     config::poll();
     xr::RenderPose rp{};
     if (!xr::renderPose(rp)) {
+        // No eye this frame (menus, videos, headset off): forget the eye setups, so that a frame drawn
+        // from an unchanged camera position is not mistaken for an eye image.
+        {
+            std::scoped_lock lock(g_setupMutex);
+            for (Setup& e : g_ring) e.valid = false;
+        }
         g_mainViewSetup.ccall<void>(arg);
         return;
     }
@@ -245,12 +259,20 @@ void __cdecl hkCameraUpdate() {
     g_headAimed = true;
 }
 
-// With LockCameraPitch=1, while the headset shows the game, the third-person camera always orbits
-// level: mouse and stick only turn it around the player, and the player looks up and down with the
-// headset. On the flat screen the camera pitches as usual.
+// Head aim (HeadAim=1), while the headset shows the game: the third-person camera always orbits
+// level, mouse and stick only turn it around the player, and up and down come from the headset. With
+// mouse aim or on the flat screen the camera pitches as usual.
 void __cdecl hkThirdPerson() {
-    if (config::lockCameraPitch() && xr::stereoActive()) *at<float>(kLookPitchVa) = 0.f;
+    if (config::headAim() && xr::stereoActive()) *at<float>(kLookPitchVa) = 0.f;
     g_thirdPerson.ccall<void>();
+}
+
+// Head aim in vehicles, while the headset shows the game: the free camera gets no vertical look input
+// (see kFreeCamCoreCallVa).
+void freeCamPitch(safetyhook::Context&) {
+    if (!config::headAim() || !xr::stereoActive()) return;
+    *at<float>(kFreeCamUserElevVa) = 0.f;    // mouse and stick (confirmed in a drive)
+    *at<float>(kFreeCamMousePitchVa) = 0.f;  // absolute mouse mode (vehicle_mouse_cam option)
 }
 
 template <size_t N>
@@ -284,6 +306,12 @@ bool install() {
     g_shakeEval = hookChecked(kShakeEvalVa, shakeEval, reinterpret_cast<void*>(&hkShakeEval), "camera shake");
     g_thirdPerson = hookChecked(kThirdPersonUpdateVa, thirdPerson, reinterpret_cast<void*>(&hkThirdPerson), "third-person camera");
     bool uiPass = hud::installEngineHook();
+    // call FUN_006d7180
+    static const uint8_t freeCamCall[] = {0xE8, 0x75, 0xD1, 0xFF, 0xFF};
+    if (memcmp(at<uint8_t>(kFreeCamCoreCallVa), freeCamCall, sizeof freeCamCall) == 0)
+        g_freeCamPitch = safetyhook::create_mid(at<void>(kFreeCamCoreCallVa), &freeCamPitch);
+    else
+        LOG("vehicle camera at %p does not match the expected bytes; not hooked", at<void>(kFreeCamCoreCallVa));
     bool wndProc = mouse::install();
     // mov eax,[camera target handle] ; sub esp,0x6C ; push esi ; push eax
     static const uint8_t cameraUpdate[] = {0x83, 0xEC, 0x6C, 0x56, 0x50};
@@ -293,10 +321,10 @@ bool install() {
         LOG("camera update at %p does not match the expected bytes; not hooked", at<void>(kCameraUpdateVa));
 
     LOG("Engine hooks: main view setup %s, render_begin %s, swapchain resize %s, camera shake %s, third-person camera %s, "
-        "UI pass %s, camera update %s, window procedure %s",
+        "UI pass %s, camera update %s, window procedure %s, vehicle camera %s",
         g_mainViewSetup ? "ok" : "FAILED", g_renderBegin ? "ok" : "FAILED", g_swapchainResize ? "ok" : "FAILED",
         g_shakeEval ? "ok" : "FAILED", g_thirdPerson ? "ok" : "FAILED", uiPass ? "ok" : "FAILED",
-        g_cameraUpdate ? "ok" : "FAILED", wndProc ? "ok" : "FAILED");
+        g_cameraUpdate ? "ok" : "FAILED", wndProc ? "ok" : "FAILED", g_freeCamPitch ? "ok" : "FAILED");
     return g_mainViewSetup && g_renderBegin && g_swapchainResize;
 }
 

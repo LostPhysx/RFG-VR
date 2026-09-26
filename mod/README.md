@@ -16,16 +16,17 @@ Valve Index).
   symmetric view that covers both eyes (about 2520×2360 on the Index).
 - **Head aim.** After each camera update the game camera's orientation is set to its own heading
   combined with the head orientation, so shooting, throwing and the crosshair follow the headset.
-  The camera orbit itself stays under mouse/stick control.
+  The camera orbit itself stays under mouse/stick control, horizontally only.
 - **HUD panel.** During gameplay the engine's UI pass (HUD, crosshair, subtitles, notifications) is
   drawn into a separate transparent texture instead of the eye images. The headset shows it as a
   flat panel in front of the player, locked to the head with head aim so the crosshair marks the
   aim.
-- **Menus and loading.** Outside gameplay (main menu, pause, map, options, death screen, loading)
-  the game renders its normal flat view with the menu, shown on a fixed screen in front of the
-  player.
-- **Comfort.** Camera shake and, while the headset shows the game, the third-person camera's
-  vertical look input are removed (see the settings below).
+- **Menus, videos and loading.** Outside gameplay (main menu, pause, map, options, death screen,
+  cutscene videos, loading) the game renders its normal flat view, shown on a fixed screen in front
+  of the player.
+- **Comfort.** Camera shake is removed, and with head aim the vertical look input of the on-foot and
+  vehicle cameras too (see the settings below).
+- **Videos.** Cutscene videos and loading screens play on the fixed screen like menus.
 - **Mouse in menus.** Mouse positions are scaled from the window size to the render size so menu
   pointers line up, and while the headset shows the game the cursor is kept inside the window.
 
@@ -77,9 +78,7 @@ game is running.
     WorldScale=1.0
     ; 1 = keep the game's camera shake (explosions, hammer hits), 0 = no shake.
     CameraShake=0
-    ; 1 = mouse/stick only turn the camera around the player; look up and down with the headset.
-    LockCameraPitch=1
-    ; 1 = the game aims where you look (UI panel follows your head), 0 = mouse aim.
+    ; 1 = aim with your head, 0 = aim with the mouse.
     HeadAim=1
     ; 1 = in-game UI on a separate panel in front of you, 0 = drawn into the 3D view.
     HudLayer=1
@@ -94,11 +93,11 @@ together.
 Camera shake is off by default. That covers every shake, including the constant idle sway while
 standing, and the controller rumble and blur that come with them; the shake sounds still play.
 
-`LockCameraPitch=1` (the default) keeps the on-foot camera at a level orbit while the headset
-shows the game: the mouse and stick only turn it around the character, and up and down comes from
-the headset. On the flat screen the camera pitches as usual. With `HeadAim=1` the game aims where
-you look; with `HeadAim=0` it aims along the camera, so shots stay level while the pitch is locked.
-Vehicle and turret cameras aren't affected by the pitch lock.
+`HeadAim=1` (the default): the game aims where you look. The mouse and stick only turn the on-foot
+and vehicle cameras around the character, up and down come from the headset, and the UI panel follows your head
+so the crosshair marks the aim. `HeadAim=0`: the mouse controls the camera fully, up and down
+included, the game aims along it, and the UI panel stays fixed in front of you. On the flat screen
+(headset off) the mouse always aims as usual. Turret cameras keep their mouse pitch.
 
 Optional flag files next to the DLL:
 
@@ -115,8 +114,6 @@ containing `667720`.
 - There is no motion-controller input yet. Play with mouse and keyboard or a gamepad.
 - Thrown charges land less precisely than bullets with head aim (they are not perfectly precise
   with mouse aim either).
-- The game pauses when its window loses focus (e.g. the SteamVR dashboard); click the window to
-  resume.
 - While the HUD panel is active, the desktop window shows the 3D view without the UI.
 - The desktop window shows the eye image squeezed to the window's aspect ratio.
 - The process runs close to the 32-bit address-space limit (about 3.1 GB used, see the log).

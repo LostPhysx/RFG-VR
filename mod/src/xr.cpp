@@ -492,7 +492,7 @@ void frame(IDXGISwapChain* sc) {
     if (g_frameState.shouldRender && SUCCEEDED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&bb))))
         bb->GetDesc(&bd);
 
-    bool image = g_eyeRendered;
+    bool image = g_eyeRendered && gamestate::gameplay();  // outside gameplay: always the virtual screen
     g_eyeRendered = false;
     if (image) {
         g_idlePresents = 0;

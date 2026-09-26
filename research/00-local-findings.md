@@ -155,7 +155,7 @@ Open issues: resolution is the window backbuffer (1280x720 per eye); HUD is bake
 
 - `gameseq_get_state` (`0x7BFCF0`) values seen in play (RFGR_Types rfg/Game.h): 0 main menu, 1 gameplay, 2 load, 3 boot, 0x0F in-game options, 0x10 death options, 0x25 map, 0x2B handbook, 0x2E weapon cabinet, 0x31 video cutscene, 0x32 save/load screen, 0x37 verify savegame, 0x3E quick pause.
 - The mod runs stereo, head aim and HUD capture only in state 1; every other state shows the game's flat image on the virtual screen.
-- State push is `FUN_007d87c0(state, a, b)`, state pop (Esc-like, queued) is `FUN_007d8870()`. Quick pause (0x3E) is entered when the window loses focus; not suppressed yet.
+- State push is `FUN_007d87c0(state, a, b)`, state pop (Esc-like, queued) is `FUN_007d8870()`. Quick pause (0x3E) is entered when the window loses focus.
 
 ## Off-centre projection attempt (2026-09-26, reverted)
 
@@ -181,3 +181,9 @@ Open issues: resolution is the window backbuffer (1280x720 per eye); HUD is bake
 - Input is Raw Input plus window messages. The engine subclasses the game window with `FUN_00c7d070` (LRESULT __stdcall wndproc), which passes messages to `FUN_00c7cb70`. With the cursor visible (menus) WM_MOUSEMOVE client coordinates become the menu pointer position; the menus are laid out for the backbuffer, which the mod enlarges to the headset eye size, so the mod scales mouse-message coordinates by render size / client size outside gameplay.
 - In gameplay the cursor is hidden and recentred in the window (`FUN_00c75430`, SetCursorPos to the client centre); look input is the offset from that centre. Scaling coordinates there makes the camera spin, so gameplay messages pass through unchanged.
 - Cursor mode: `FUN_00c75320(input, show, clip)` hides the cursor and ClipCursor()s it to the client rect only while hidden (gameplay); in menus it is released. While the headset shows the game and the window has focus, the mod keeps the cursor clipped to the window.
+
+## Vehicles and videos (2026-09-26)
+
+- Vehicles use `CAMERA_FREE_MODE` (0), confirmed by the camera-mode log (on foot is 10). Its update `0x6D9780` passes the per-frame look input to its core `FUN_006d7180` at `0x6DA006` (usercall, EAX = rfg_camera) and clears it afterwards. A drive showed the vertical input in free_mode_params `user_elev` (`0x01DE4CC0`); the absolute-mouse pitch (`0x01DE4D54`) stayed 0. With head aim the mod zeroes both in a mid hook at that call.
+- `HeadAim` is the single aim setting (the separate `LockCameraPitch` was merged into it): head aim and the pitch lock only make sense together.
+- Video cutscenes (GS_VIDEO_CUTSCENE_PLAY 0x31) and the loading screen after them were black in the headset: behind the video the engine keeps drawing the frozen 3D camera, whose unchanged position matched a stale eye setup, so frames were taken for eye images. Now outside gameplay the headset always shows the virtual screen, and the eye setups are discarded while no eye poses are handed out.
