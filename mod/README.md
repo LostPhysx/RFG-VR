@@ -61,6 +61,8 @@ game is running.
     WorldScale=1.0
     ; 1 = keep the game's camera shake (explosions, hammer hits), 0 = no shake.
     CameraShake=0
+    ; 1 = mouse/stick only turn the camera around the player; look up and down with the headset.
+    LockCameraPitch=1
 
 The game world is in metres, so `WorldScale=1` is geometrically correct. From the third-person
 camera a larger value can still feel better, because it shrinks eye separation and head movement
@@ -68,6 +70,11 @@ together.
 
 Camera shake is off by default. That covers every shake, including the constant idle sway while
 standing, and the controller rumble and blur that come with them; the shake sounds still play.
+
+`LockCameraPitch=1` (the default) keeps the on-foot camera at a level orbit. The mouse and stick
+only turn it around the character, and up and down comes from the headset. The game aims where its
+camera points, so while it's on, shots stay level; set it to 0 to aim up and down with the mouse.
+Vehicle and turret cameras aren't affected.
 
 Optional flag files next to the DLL:
 

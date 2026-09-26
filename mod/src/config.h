@@ -8,11 +8,13 @@ namespace rfgvr::config {
 //   [VR]
 //   WorldScale=1.0   ; apparent size of the world: 1 = life-size, 1.5 = everything looks 1.5x bigger
 //   CameraShake=0    ; 1 = keep the game's camera shake (explosions, hammer hits); 0 = none
+//   LockCameraPitch=1 ; 1 = mouse/stick only turn the camera around the player; look up/down with the head
 
 // Game thread, once per frame.
 void poll();
 
 float worldScale();
 bool cameraShake();
+bool lockCameraPitch();
 
 }  // namespace rfgvr::config

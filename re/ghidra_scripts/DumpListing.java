@@ -22,11 +22,11 @@ public class DumpListing extends GhidraScript {
                 long a = Long.parseLong(args[i].replaceFirst("^0[xX]", ""), 16);
                 Function f = getFunctionContaining(toAddr(a));
                 if (f == null) {
-                    // Not a known function (e.g. a callback label): disassemble linearly until RET, max 150.
+                    // Not a known function (e.g. a callback label): disassemble linearly until RET, max 1500.
                     out.println(";;;; " + args[i] + ": no function, linear listing");
                     Address cur = toAddr(a);
                     if (getInstructionAt(cur) == null) disassemble(cur);
-                    for (int n = 0; n < 150; n++) {
+                    for (int n = 0; n < 1500; n++) {
                         Instruction ins = getInstructionAt(cur);
                         if (ins == null) {
                             disassemble(cur);

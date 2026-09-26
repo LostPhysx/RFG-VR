@@ -49,6 +49,12 @@ constexpr uintptr_t kShakeEvalVa = 0x6CCDF0;
 constexpr uintptr_t kShakeSlotsVa = 0x01DE4554;  // camera_shake* [5]
 constexpr int kShakeSlots = 5;
 
+// On-foot camera: CAMERA_THIRD_PERSON_MODE (10), per-frame update FUN_006dd250 (camera mode table
+// 0x012CFC84, 5 pointers per mode, update at +0xC). It orbits the player at the angles stored in
+// lookaround_mode_params pitch / heading, which look input (mouse, stick) accumulates into.
+constexpr uintptr_t kThirdPersonUpdateVa = 0x6DD250;
+constexpr uintptr_t kLookPitchVa = 0x01DE4D70;  // float lookaround pitch (rad)
+
 // Partial rl_camera (sizeof 0x5C0), offsets from FUN_00520d70 (perspective setup).
 struct rl_camera {
     uint8_t pad00[0x2C];
@@ -69,6 +75,7 @@ SafetyHookInline g_mainViewSetup;
 SafetyHookInline g_renderBegin;
 SafetyHookInline g_swapchainResize;
 SafetyHookInline g_shakeEval;
+SafetyHookInline g_thirdPerson;
 uintptr_t g_base = 0;
 DWORD g_presentThread = 0;
 
@@ -112,6 +119,8 @@ void applyEye(float* pos, float* orient, const xr::RenderPose& rp) {
 }
 
 void __cdecl hkMainViewSetup(void* arg) {
+    static int lastMode = -1;  // rfg_camera::mode (camera_mode enum, RFGR_Types); on foot = 10
+    if (int mode = *at<int>(kRfgCameraVa); mode != lastMode) LOG("camera mode -> %d", lastMode = mode);
     config::poll();
     xr::RenderPose rp{};
     if (!xr::renderPose(rp)) {
@@ -200,6 +209,13 @@ void __cdecl hkShakeEval() {
     g_shakeEval.ccall<void>();
 }
 
+// With LockCameraPitch=1 the third-person camera always orbits level: mouse and stick only turn it
+// around the player, and the player looks up and down with the headset.
+void __cdecl hkThirdPerson() {
+    if (config::lockCameraPitch()) *at<float>(kLookPitchVa) = 0.f;
+    g_thirdPerson.ccall<void>();
+}
+
 template <size_t N>
 SafetyHookInline hookChecked(uintptr_t va, const uint8_t (&expect)[N], void* detour, const char* what) {
     if (memcmp(at<uint8_t>(va), expect, N) != 0) {
@@ -222,15 +238,18 @@ bool install() {
     static const uint8_t resize[] = {0x53, 0x8B, 0x5C, 0x24, 0x0C, 0x57, 0x85, 0xDB};
     // sub esp,0x2EC
     static const uint8_t shakeEval[] = {0x81, 0xEC, 0xEC, 0x02, 0x00, 0x00};
+    // sub esp,0x70 ; call ...
+    static const uint8_t thirdPerson[] = {0x83, 0xEC, 0x70, 0xE8};
 
     g_mainViewSetup = hookChecked(kMainViewSetupVa, mainView, reinterpret_cast<void*>(&hkMainViewSetup), "main view setup");
     g_renderBegin = hookChecked(kRenderBeginVa, renderBegin, reinterpret_cast<void*>(&hkRenderBegin), "render_begin");
     g_swapchainResize = hookChecked(kSwapchainResizeVa, resize, reinterpret_cast<void*>(&hkSwapchainResize), "swapchain resize");
     g_shakeEval = hookChecked(kShakeEvalVa, shakeEval, reinterpret_cast<void*>(&hkShakeEval), "camera shake");
+    g_thirdPerson = hookChecked(kThirdPersonUpdateVa, thirdPerson, reinterpret_cast<void*>(&hkThirdPerson), "third-person camera");
 
-    LOG("Engine hooks: main view setup %s, render_begin %s, swapchain resize %s, camera shake %s",
+    LOG("Engine hooks: main view setup %s, render_begin %s, swapchain resize %s, camera shake %s, third-person camera %s",
         g_mainViewSetup ? "ok" : "FAILED", g_renderBegin ? "ok" : "FAILED", g_swapchainResize ? "ok" : "FAILED",
-        g_shakeEval ? "ok" : "FAILED");
+        g_shakeEval ? "ok" : "FAILED", g_thirdPerson ? "ok" : "FAILED");
     return g_mainViewSetup && g_renderBegin && g_swapchainResize;
 }
 

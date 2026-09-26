@@ -19,6 +19,7 @@ bool g_haveFile = false;
 DWORD g_lastCheck = 0;
 float g_worldScale = 1.f;
 bool g_cameraShake = false;
+bool g_lockCameraPitch = true;
 
 std::wstring iniPath() {
     HMODULE self = nullptr;
@@ -42,8 +43,9 @@ float readFloat(const wchar_t* section, const wchar_t* key, float def, float lo,
 void load() {
     g_worldScale = readFloat(L"VR", L"WorldScale", 1.f, kMinWorldScale, kMaxWorldScale);
     g_cameraShake = readFloat(L"VR", L"CameraShake", 0.f, 0.f, 1.f) != 0.f;
-    LOG("config: WorldScale %.3f, CameraShake %d%s", g_worldScale, g_cameraShake,
-        g_haveFile ? "" : " (no rfg-vr.ini, defaults)");
+    g_lockCameraPitch = readFloat(L"VR", L"LockCameraPitch", 1.f, 0.f, 1.f) != 0.f;
+    LOG("config: WorldScale %.3f, CameraShake %d, LockCameraPitch %d%s", g_worldScale, g_cameraShake,
+        g_lockCameraPitch, g_haveFile ? "" : " (no rfg-vr.ini, defaults)");
 }
 
 }  // namespace
@@ -65,5 +67,6 @@ void poll() {
 
 float worldScale() { return g_worldScale; }
 bool cameraShake() { return g_cameraShake; }
+bool lockCameraPitch() { return g_lockCameraPitch; }
 
 }  // namespace rfgvr::config
