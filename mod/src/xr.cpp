@@ -16,6 +16,9 @@
 #include <string>
 #include <vector>
 
+#include "config.h"
+#include "gamestate.h"
+#include "hud.h"
 #include "log.h"
 
 namespace rfgvr::xr {
@@ -35,6 +38,7 @@ XrInstance g_instance = XR_NULL_HANDLE;
 XrSystemId g_systemId = XR_NULL_SYSTEM_ID;
 XrSession g_session = XR_NULL_HANDLE;
 XrSpace g_space = XR_NULL_HANDLE;
+XrSpace g_viewSpace = XR_NULL_HANDLE;  // head-locked, for the HUD panel with head aim
 XrSessionState g_state = XR_SESSION_STATE_UNKNOWN;
 bool g_running = false;
 std::vector<int64_t> g_formats;
@@ -52,6 +56,7 @@ struct Swap {
     bool failed = false;                          // creation failed for this (w,h,srcFormat); don't retry
 };
 Swap g_mirror;  // quad layer (menus etc.)
+Swap g_hud;     // quad layer over the stereo view: the captured in-game UI (premultiplied alpha)
 
 struct Eye {
     Swap swap;
@@ -125,12 +130,15 @@ void destroySwap(Swap& s) {
 void teardown(const char* why) {
     LOG("OpenXR teardown: %s", why);
     destroySwap(g_mirror);
+    destroySwap(g_hud);
     for (auto& e : g_eyes) {
         destroySwap(e.swap);
         e.have = false;
     }
     g_frameOpen = false;
+    if (g_viewSpace != XR_NULL_HANDLE) xrDestroySpace(g_viewSpace);
     if (g_space != XR_NULL_HANDLE) xrDestroySpace(g_space);
+    g_viewSpace = XR_NULL_HANDLE;
     if (g_session != XR_NULL_HANDLE) xrDestroySession(g_session);
     if (g_instance != XR_NULL_HANDLE) xrDestroyInstance(g_instance);
     g_space = XR_NULL_HANDLE;
@@ -236,6 +244,8 @@ Phase createSession(IDXGISwapChain* sc) {
     rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     rsci.poseInReferenceSpace.orientation.w = 1.f;
     if (!XR_OK(xrCreateReferenceSpace(g_session, &rsci, &g_space))) return Phase::Disabled;
+    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    if (!XR_OK(xrCreateReferenceSpace(g_session, &rsci, &g_viewSpace))) return Phase::Disabled;
 
     uint32_t n = 0;
     if (!XR_OK(xrEnumerateSwapchainFormats(g_session, 0, &n, nullptr))) return Phase::Disabled;
@@ -402,7 +412,8 @@ void endFrame(Submit what, ID3D11Texture2D* bb, const D3D11_TEXTURE2D_DESC& bd) 
     XrCompositionLayerProjectionView pv[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
                                               {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-    const XrCompositionLayerBaseHeader* layers[1] = {};
+    XrCompositionLayerQuad hudQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    const XrCompositionLayerBaseHeader* layers[2] = {};
     uint32_t layerCount = 0;
 
     if (what == Submit::Stereo || what == Submit::Mono) {
@@ -421,6 +432,25 @@ void endFrame(Submit what, ID3D11Texture2D* bb, const D3D11_TEXTURE2D_DESC& bd) 
         layers[0] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&proj);
         layerCount = 1;
         if (what == Submit::Stereo && ++g_stereoFrames == 1) LOG("First stereo frame submitted (both eyes, same head pose)");
+
+        // In-game UI on a transparent panel centred on the aim direction: straight ahead of the head
+        // with head aim, else straight ahead in the room (the game camera's forward).
+        if (ID3D11Texture2D* ui = hud::latest()) {
+            D3D11_TEXTURE2D_DESC ud{};
+            ui->GetDesc(&ud);
+            if (ensureSwap(g_hud, ud, "HUD") && copyInto(g_hud, ui, ud)) {
+                float d = config::hudDistance(), w = config::hudWidth();
+                hudQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+                hudQuad.space = config::headAim() ? g_viewSpace : g_space;
+                hudQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+                hudQuad.subImage.swapchain = g_hud.handle;
+                hudQuad.subImage.imageRect = {{0, 0}, {static_cast<int32_t>(g_hud.w), static_cast<int32_t>(g_hud.h)}};
+                hudQuad.pose.orientation = {0.f, 0.f, 0.f, 1.f};
+                hudQuad.pose.position = {0.f, 0.f, -d};
+                hudQuad.size = {w, w * static_cast<float>(g_hud.h) / static_cast<float>(g_hud.w)};
+                layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&hudQuad);
+            }
+        }
     } else if (what == Submit::Screen && bb && ensureSwap(g_mirror, bd, "mirror") && copyInto(g_mirror, bb, bd)) {
         quad.space = g_space;
         quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -499,7 +529,9 @@ void frame(IDXGISwapChain* sc) {
 }  // namespace
 
 bool renderPose(RenderPose& out) {
-    if (g_phase != Phase::Ready || !g_running) return false;
+    // Outside gameplay (menus over the world, loading) the game renders its own flat view, shown on
+    // the virtual screen.
+    if (g_phase != Phase::Ready || !g_running || !gamestate::gameplay()) return false;
     std::scoped_lock lock(g_viewMutex);
     if (!g_frameOpen || !g_viewsValid) return false;
     int eye = static_cast<int>(g_requests++ & 1);  // first setup of a headset frame: left, then right
@@ -510,10 +542,24 @@ bool renderPose(RenderPose& out) {
     return true;
 }
 
+bool headOrientation(XrQuaternionf& out) {
+    if (g_phase != Phase::Ready || !g_running) return false;
+    std::scoped_lock lock(g_viewMutex);
+    if (!g_frameOpen || !g_viewsValid) return false;
+    out = g_views[0].pose.orientation;  // both eyes share the head's orientation
+    return true;
+}
+
+bool hudCaptureWanted() {
+    return g_phase == Phase::Ready && g_running && g_frameOpen && g_frameState.shouldRender && g_idlePresents < 2 &&
+           gamestate::gameplay();
+}
+
 bool eyeRenderSize(uint32_t& w, uint32_t& h) {
     if (!g_haveFov || !g_recW[0] || !g_recH[0]) return false;
     // Symmetric frustum that covers both eyes' asymmetric fov (what the engine renders), at the
-    // pixel density SteamVR recommends for the asymmetric one.
+    // pixel density SteamVR recommends for the asymmetric one. (An off-centre projection would save
+    // ~25% of the pixels, but the engine's fog/atmosphere then renders wrong: the terrain turns orange.)
     float tanH = 0, tanV = 0, pptH = 0, pptV = 0;
     for (int i = 0; i < 2; ++i) {
         const XrFovf& f = g_eyeFov[i];

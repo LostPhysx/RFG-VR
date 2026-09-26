@@ -11,6 +11,8 @@
 #include <mutex>
 
 #include "config.h"
+#include "gamestate.h"
+#include "hud.h"
 #include "log.h"
 #include "vrmath.h"
 #include "xr.h"
@@ -42,6 +44,7 @@ constexpr uintptr_t kRenderBeginVa = 0x537660;
 // resizes the DXGI buffers and recreates the engine's render targets from them.
 constexpr uintptr_t kSwapchainResizeVa = 0xC6AB20;
 
+
 // Camera shake. Every shake start (FUN_006c6e00 and two inlined copies for building stress and
 // shard impacts) puts the camera_shake* into one of 5 active slots; FUN_006ccdf0 evaluates the
 // slots once per camera update and adds the result to real_orient (also shake blur and pad rumble).
@@ -53,6 +56,11 @@ constexpr int kShakeSlots = 5;
 // 0x012CFC84, 5 pointers per mode, update at +0xC). It orbits the player at the angles stored in
 // lookaround_mode_params pitch / heading, which look input (mouse, stick) accumulates into.
 constexpr uintptr_t kThirdPersonUpdateVa = 0x6DD250;
+
+// Camera update FUN_006dffa0 (void, game thread): runs the mode update, sets real_pos/real_orient
+// from the ideal values, applies shake. Aiming, throwing and the crosshair ray use real_orient.
+constexpr uintptr_t kCameraUpdateVa = 0x6DFFA0;
+constexpr uintptr_t kRealOrientOff = 0x50;  // matrix real_orient (rfg_camera, rows: right, up, forward)
 constexpr uintptr_t kLookPitchVa = 0x01DE4D70;  // float lookaround pitch (rad)
 
 // Partial rl_camera (sizeof 0x5C0), offsets from FUN_00520d70 (perspective setup).
@@ -76,6 +84,12 @@ SafetyHookInline g_renderBegin;
 SafetyHookInline g_swapchainResize;
 SafetyHookInline g_shakeEval;
 SafetyHookInline g_thirdPerson;
+SafetyHookInline g_cameraUpdate;
+
+// Head aim: real_orient holds game yaw * head orientation between camera updates. The game's own
+// orientation is kept here, restored before the next update and used as the base for rendering.
+bool g_headAimed = false;
+float g_gameOrient[9] = {};
 uintptr_t g_base = 0;
 DWORD g_presentThread = 0;
 
@@ -135,6 +149,7 @@ void __cdecl hkMainViewSetup(void* arg) {
     float savedPos[3], savedOrient[9], savedFov = *fov;
     memcpy(savedPos, pos, sizeof savedPos);
     memcpy(savedOrient, orient, sizeof savedOrient);
+    if (g_headAimed) memcpy(orient, g_gameOrient, sizeof g_gameOrient);  // render from the game yaw only
 
     applyEye(pos, orient, rp);
     *fov = coveringVerticalFovDeg(rp.fov);
@@ -209,6 +224,26 @@ void __cdecl hkShakeEval() {
     g_shakeEval.ccall<void>();
 }
 
+void __cdecl hkCameraUpdate() {
+    auto real = reinterpret_cast<float*>(at<uint8_t>(kRfgCameraVa) + kRealOrientOff);
+    if (g_headAimed) memcpy(real, g_gameOrient, sizeof g_gameOrient);
+    g_headAimed = false;
+    g_cameraUpdate.ccall<void>();
+
+    XrQuaternionf head{};
+    if (!config::headAim() || !gamestate::gameplay() || !xr::headOrientation(head)) return;
+    memcpy(g_gameOrient, real, sizeof g_gameOrient);
+    Basis game{{real[0], real[1], real[2]}, {real[3], real[4], real[5]}, {real[6], real[7], real[8]}};
+    Basis aim = compose(basisFromQuat(orientationToLh(head)), yawOnly(game));
+    const Vec3 rows[3] = {aim.r, aim.u, aim.f};
+    for (int i = 0; i < 3; ++i) {
+        real[i * 3 + 0] = rows[i].x;
+        real[i * 3 + 1] = rows[i].y;
+        real[i * 3 + 2] = rows[i].z;
+    }
+    g_headAimed = true;
+}
+
 // With LockCameraPitch=1 the third-person camera always orbits level: mouse and stick only turn it
 // around the player, and the player looks up and down with the headset.
 void __cdecl hkThirdPerson() {
@@ -246,10 +281,19 @@ bool install() {
     g_swapchainResize = hookChecked(kSwapchainResizeVa, resize, reinterpret_cast<void*>(&hkSwapchainResize), "swapchain resize");
     g_shakeEval = hookChecked(kShakeEvalVa, shakeEval, reinterpret_cast<void*>(&hkShakeEval), "camera shake");
     g_thirdPerson = hookChecked(kThirdPersonUpdateVa, thirdPerson, reinterpret_cast<void*>(&hkThirdPerson), "third-person camera");
+    bool uiPass = hud::installEngineHook();
+    // mov eax,[camera target handle] ; sub esp,0x6C ; push esi ; push eax
+    static const uint8_t cameraUpdate[] = {0x83, 0xEC, 0x6C, 0x56, 0x50};
+    if (*at<uint8_t>(kCameraUpdateVa) == 0xA1 && memcmp(at<uint8_t>(kCameraUpdateVa) + 5, cameraUpdate, sizeof cameraUpdate) == 0)
+        g_cameraUpdate = safetyhook::create_inline(at<void>(kCameraUpdateVa), reinterpret_cast<void*>(&hkCameraUpdate));
+    else
+        LOG("camera update at %p does not match the expected bytes; not hooked", at<void>(kCameraUpdateVa));
 
-    LOG("Engine hooks: main view setup %s, render_begin %s, swapchain resize %s, camera shake %s, third-person camera %s",
+    LOG("Engine hooks: main view setup %s, render_begin %s, swapchain resize %s, camera shake %s, third-person camera %s, "
+        "UI pass %s, camera update %s",
         g_mainViewSetup ? "ok" : "FAILED", g_renderBegin ? "ok" : "FAILED", g_swapchainResize ? "ok" : "FAILED",
-        g_shakeEval ? "ok" : "FAILED", g_thirdPerson ? "ok" : "FAILED");
+        g_shakeEval ? "ok" : "FAILED", g_thirdPerson ? "ok" : "FAILED", uiPass ? "ok" : "FAILED",
+        g_cameraUpdate ? "ok" : "FAILED");
     return g_mainViewSetup && g_renderBegin && g_swapchainResize;
 }
 

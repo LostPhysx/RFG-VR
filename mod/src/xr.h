@@ -14,8 +14,9 @@ namespace rfgvr::xr {
 // (xrWaitFrame, xrBeginFrame, xrLocateViews). The engine's main view setup (game thread) asks
 // renderPose() and gets the left eye, then the right eye, of that same view set. At each Present
 // the camera hook reports which eye/set the backbuffer holds; once both eyes of the open set have
-// arrived they are submitted together. While no 3D view renders (menus, loading) the backbuffer is
-// shown on a quad in front of the player.
+// arrived they are submitted together, with the captured in-game UI as a quad over them. Outside
+// gameplay (menus, loading) no eye poses are handed out; the game's flat image is shown on a quad
+// in front of the player.
 
 // Present thread, called before the original Present so the backbuffer holds the finished frame.
 void onPresent(IDXGISwapChain* sc);
@@ -33,6 +34,13 @@ bool renderPose(RenderPose& out);
 // Present thread, before Present: the backbuffer about to be presented was rendered for `eye` of
 // headset frame `set` with `pose`, using the engine's actual (symmetric) `renderedFov`.
 void markEyeRendered(int eye, uint32_t set, const XrPosef& pose, const XrFovf& renderedFov);
+
+// Game thread: the head orientation (LOCAL space) of the open headset frame.
+bool headOrientation(XrQuaternionf& out);
+
+// Present thread: true while stereo frames are being shown, i.e. the in-game UI should be captured
+// into the HUD layer instead of the eye images.
+bool hudCaptureWanted();
 
 // Render size per eye for the engine: a symmetric frustum covering the eye fov at SteamVR's
 // recommended pixel density. False until the session has located the eyes once.

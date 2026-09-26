@@ -11,6 +11,8 @@
 
 #include "autostart.h"
 #include "camera_hook.h"
+#include "gamestate.h"
+#include "hud.h"
 #include "log.h"
 #include "xr.h"
 
@@ -20,6 +22,20 @@ static SafetyHookInline g_createDevice;  // inline hook on d3d11.dll!D3D11Create
 static SafetyHookInline g_present;
 static SafetyHookInline g_resizeBuffers;
 static std::atomic<bool> g_swapchainHooksInstalled{false};
+
+// Address space of this 32-bit process: used, and the largest free block (what a big allocation needs).
+static void addressSpace(unsigned& usedMb, unsigned& largestFreeMb) {
+    MEMORYSTATUSEX ms{sizeof ms};
+    GlobalMemoryStatusEx(&ms);
+    usedMb = static_cast<unsigned>((ms.ullTotalVirtual - ms.ullAvailVirtual) >> 20);
+    SIZE_T largest = 0;
+    MEMORY_BASIC_INFORMATION mbi{};
+    for (uintptr_t a = 0x10000; VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof mbi); a += mbi.RegionSize) {
+        if (mbi.State == MEM_FREE && mbi.RegionSize > largest) largest = mbi.RegionSize;
+        if (a + mbi.RegionSize < a) break;
+    }
+    largestFreeMb = static_cast<unsigned>(largest >> 20);
+}
 
 static void logSwapchain(IDXGISwapChain* sc, const char* why) {
     DXGI_SWAP_CHAIN_DESC d{};
@@ -40,12 +56,17 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT syncInterval
     auto now = clock::now();
     if (now - windowStart >= std::chrono::seconds(10)) {
         double secs = std::chrono::duration<double>(now - windowStart).count();
-        LOG("Present: frame %llu, %.1f fps, syncInterval %u", frame, windowFrames / secs, syncInterval);
+        unsigned used = 0, freeBlock = 0;
+        addressSpace(used, freeBlock);
+        LOG("Present: frame %llu, %.1f fps, syncInterval %u, address space %u MB used, largest free block %u MB", frame,
+            windowFrames / secs, syncInterval, used, freeBlock);
         windowFrames = 0;
         windowStart = now;
     }
     camera::onPresent();
+    gamestate::update();
     autostart::onPresent();
+    hud::onPresent(sc);
     xr::onPresent(sc);  // before Present: the backbuffer holds the finished frame
     return g_present.stdcall<HRESULT>(sc, syncInterval, flags);
 }
@@ -119,7 +140,10 @@ static HRESULT WINAPI hkD3D11CreateDevice(IDXGIAdapter* adapter, D3D_DRIVER_TYPE
     LOG("D3D11CreateDevice(adapter %p, type %d, flags 0x%X, %u levels) -> 0x%08lX, device %p, level 0x%X", adapter,
         type, flags, numLevels, static_cast<unsigned long>(hr), device ? *device : nullptr,
         gotLevel ? *gotLevel : 0);
-    if (SUCCEEDED(hr) && device && *device) installSwapchainHooks(*device);
+    if (SUCCEEDED(hr) && device && *device) {
+        installSwapchainHooks(*device);
+        hud::installContextHooks(*device);
+    }
     return hr;
 }
 

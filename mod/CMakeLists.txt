@@ -35,7 +35,9 @@ add_library(rfg_vr SHARED
     src/iat.cpp
     src/xr.cpp
     src/camera_hook.cpp
+    src/hud.cpp
     src/autostart.cpp
+    src/gamestate.cpp
     src/video_hook.cpp
     src/dinput8.def)
 set_target_properties(rfg_vr PROPERTIES OUTPUT_NAME dinput8)

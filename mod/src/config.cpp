@@ -20,6 +20,10 @@ DWORD g_lastCheck = 0;
 float g_worldScale = 1.f;
 bool g_cameraShake = false;
 bool g_lockCameraPitch = true;
+bool g_headAim = true;
+bool g_hudLayer = true;
+float g_hudDistance = 2.f;
+float g_hudWidth = 2.4f;
 
 std::wstring iniPath() {
     HMODULE self = nullptr;
@@ -44,8 +48,14 @@ void load() {
     g_worldScale = readFloat(L"VR", L"WorldScale", 1.f, kMinWorldScale, kMaxWorldScale);
     g_cameraShake = readFloat(L"VR", L"CameraShake", 0.f, 0.f, 1.f) != 0.f;
     g_lockCameraPitch = readFloat(L"VR", L"LockCameraPitch", 1.f, 0.f, 1.f) != 0.f;
-    LOG("config: WorldScale %.3f, CameraShake %d, LockCameraPitch %d%s", g_worldScale, g_cameraShake,
-        g_lockCameraPitch, g_haveFile ? "" : " (no rfg-vr.ini, defaults)");
+    g_headAim = readFloat(L"VR", L"HeadAim", 1.f, 0.f, 1.f) != 0.f;
+    g_hudLayer = readFloat(L"VR", L"HudLayer", 1.f, 0.f, 1.f) != 0.f;
+    g_hudDistance = readFloat(L"VR", L"HudDistance", 2.f, 0.3f, 20.f);
+    g_hudWidth = readFloat(L"VR", L"HudWidth", 2.4f, 0.1f, 40.f);
+    LOG("config: WorldScale %.3f, CameraShake %d, LockCameraPitch %d, HeadAim %d, HudLayer %d, HudDistance %.2f, "
+        "HudWidth %.2f%s",
+        g_worldScale, g_cameraShake, g_lockCameraPitch, g_headAim, g_hudLayer, g_hudDistance, g_hudWidth,
+        g_haveFile ? "" : " (no rfg-vr.ini, defaults)");
 }
 
 }  // namespace
@@ -68,5 +78,9 @@ void poll() {
 float worldScale() { return g_worldScale; }
 bool cameraShake() { return g_cameraShake; }
 bool lockCameraPitch() { return g_lockCameraPitch; }
+bool headAim() { return g_headAim; }
+bool hudLayer() { return g_hudLayer; }
+float hudDistance() { return g_hudDistance; }
+float hudWidth() { return g_hudWidth; }
 
 }  // namespace rfgvr::config

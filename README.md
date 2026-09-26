@@ -3,9 +3,10 @@
 A 6-DOF VR mod for **Red Faction Guerrilla Re-Mars-tered** (Steam) using OpenXR, built as an
 injected DLL in the flat2vr style.
 
-**Status: first working prototype.** It gives stereo 3D with head tracking (rotation and position)
-at the headset's native resolution, 120 Hz on a Valve Index with an RTX 3070. The HUD, motion
-controllers and first-person play are not done yet.
+**Status: early prototype.** Third person is playable: stereo 3D with head tracking (rotation and
+position) at the headset's native resolution, 120 Hz on a Valve Index with an RTX 3070, head aim,
+the HUD on a panel in front of the player and menus on a virtual screen. Motion controllers and
+first-person play are not done yet.
 
 ## Layout
 

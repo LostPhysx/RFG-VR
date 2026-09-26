@@ -137,3 +137,41 @@ Open issues: resolution is the window backbuffer (1280x720 per eye); HUD is bake
 - Third-person update `FUN_006dd250` (void, cdecl) orbits the player at the angles in `lookaround_mode_params`: **pitch `0x01DE4D70`**, heading `0x01DE4D7C` (radians, rfg_camera +0x220 / +0x22C). Look input accumulates into them before the update runs. The mod sets pitch to 0 at the entry of `FUN_006dd250`, which gives a level orbit; only one frame's input (~0.004 rad) remains.
 - Dead ends, for the record: `FUN_006cafb0` / `FUN_006cb1a0` (heading/pitch input into free_mode_params `user_rot` 0x01DE4CB0 / `user_elev` 0x01DE4CC0), `FUN_00a43150` and `FUN_00a21470` (turret-style look motors) are **not called** for on-foot mouse look (0 calls measured while moving the mouse). free_mode_params starts at rfg_camera+0x13C (`0x01DE4C8C`).
 - Input options: `pitch_sensitivity` `0x025359A0` → runtime `0x016481D8`, `heading_sensitivity` `0x025359A4` → `0x016481DC`, `mouse_sensitivity` `0x025359A8` → `0x01518A30` (one value for both mouse axes).
+
+## HUD capture (2026-09-26)
+
+- Found with a one-frame D3D11 trace (temporary tool, since removed: hooks on the immediate context's OMSetRenderTargets / draws / clears / PSSetShader / OMSetBlendState, plus the caller of each draw). The UI is about 40 alpha-blended 4-vertex quads drawn onto the backbuffer near the end of the frame, all from the immediate-primitive helper `FUN_0052d690`, called only by `FUN_00543b60` during the frame.
+- Chain: `FUN_007cf730` (main view render, Present thread) → render_begin, 3D world (`FUN_004c74c0`), `FUN_004f0f30`, **`FUN_00550830` (int __thiscall(queue, renderer): the frame's 2D primitive queue = the whole in-game UI)** → `FUN_0054c9f0` → `FUN_00543b60` → `FUN_0052d690`. Menus without a 3D view (main menu, loading) draw their UI elsewhere (`FUN_00550480`).
+- Much of the frame is recorded by a second thread into a deferred context (its draws had no render-target changes of their own); the UI quads are drawn by the Present thread on the immediate context.
+- The mod hooks `FUN_00550830`: while it runs, OMSetRenderTargets with the backbuffer is redirected to a transparent texture of the same size/format, and each blend state is cloned with the alpha channel set to (ONE, INV_SRC_ALPHA) so the result is premultiplied RGBA. Pitfall: draws with a colour write mask of 0 (stencil masks that clip subtitle and notification text) must keep writing nothing; forcing alpha writes on them made the whole HUD area opaque black.
+- The texture goes to an OpenXR quad layer (`BLEND_TEXTURE_SOURCE_ALPHA`), in VIEW space with head aim.
+
+## Head aim (2026-09-26)
+
+- Camera update `FUN_006dffa0` (void, game thread) runs the per-mode update and sets real_pos/real_orient (rfg_camera +0x2C / +0x50 = `0x01DE4B7C` / `0x01DE4BA0`) from the ideal values, then applies shake. Aiming, throwing and the crosshair ray use real_orient: the mod sets it to yaw(game) × head orientation after each update and restores the game's own value before the next one; rendering uses the saved game orientation so the head is not applied twice.
+- A 1 Hz probe of head-aim yaw vs. the player object's facing (object +0x10 orientation) showed the character turns toward the head-aim direction when shooting or throwing. Guns hit where the crosshair is; thrown charges land less precisely, which is accepted (they are not perfectly precise with mouse aim either).
+
+## Game states and menus (2026-09-26)
+
+- `gameseq_get_state` (`0x7BFCF0`) values seen in play (RFGR_Types rfg/Game.h): 0 main menu, 1 gameplay, 2 load, 3 boot, 0x0F in-game options, 0x10 death options, 0x25 map, 0x2B handbook, 0x2E weapon cabinet, 0x31 video cutscene, 0x32 save/load screen, 0x37 verify savegame, 0x3E quick pause.
+- The mod runs stereo, head aim and HUD capture only in state 1; every other state shows the game's flat image on the virtual screen.
+- State push is `FUN_007d87c0(state, a, b)`, state pop (Esc-like, queued) is `FUN_007d8870()`. Quick pause (0x3E) is entered when the window loses focus; not suppressed yet.
+
+## Off-centre projection attempt (2026-09-26, reverted)
+
+- Goal: render each eye's exact asymmetric FOV instead of the symmetric frustum covering it (~25% fewer pixels at the same density: 2016×2240 vs 2520×2356).
+- `FUN_00520d70` (rl_camera perspective setup, __thiscall(rl_camera*, renderer)) writes the symmetric projection to rl_camera+0xC0, copies view and projection into the renderer state (renderer+0x478 → +0x400 / +0x440), combines them (`FUN_004d24d0`, `FUN_004f2500`) and builds the culling frustum (`FUN_004e5ea0`). Patching the projection after the call caused double vision (the GPU already had the symmetric matrices). Patching it in a mid hook at `0x52112A` (EBX = &proj, before the copy) gave correct stereo, but the terrain turned orange while the sky stayed normal: a fog/atmosphere pass evidently assumes a centred projection. Reverted; fixing it would need shader patching.
+
+## Address space (2026-09-26)
+
+- The Present log now includes address space used and the largest free block. Typical: 3.06 GB used at the main menu, 3.13-3.18 GB in gameplay, largest free block 880-1000 MB.
+- Two loads did not complete this session: one froze after the mission cutscene (Present stopped; the Present and game threads waited in game code on a busy worker thread, no mod frames on their stacks), one stayed in GS_VERIFY_SAVEGAME with Present running. Cause unknown; the memory log will show whether address space is involved if it recurs.
+
+## Autostart: title screen and save loading (2026-09-26)
+
+- Title screen ("please press any key or button") is part of GS_MAINMENU. The main menu update at `0x913910` waits while byte `0x02C03571` is 0 until an input device belongs to player 0 (`FUN_00c748b0(input, 0)` scans the input system's 16 device slots at input+0x11AC, 24 bytes each: int state (1 keyboard, 2 mouse), byte player at +20, 0xFF = none). Then it runs the title sequence itself: sets the flag, hides the title (`0x02C0353E` = 0), starts the profile/session that reads the saves.
+- The assignment happens in addInputEvent `FUN_00c7acf0`: input from an unowned slot while an assignment is pending (input+0x132C mode ≠ 3, input+0x1330 player) gives that slot and every keyboard/mouse slot to the pending player and marks it done (mode 3, player 0xFF). Input system pointer: `0x01CE86C0`. `FUN_00c74720(input, player, mode)` only registers a pending request (mode 3 means "done", so calling it with 3 disables assignment).
+- Autostart assigns the keyboard/mouse slots to player 0 and marks the assignment done, then waits 2 s before using the menu. Skipping the title (calling the menu handler directly) leaves no player, and the Load Game screen stays empty ("No saved games"); rebuilding the list, reopening the screen or setting the active user (`0x01E2A9CC`, setter `FUN_0094a6a0`) did not help.
+- Main menu items (`FUN_008f7e40`, handler `0x8F7C30`): 0 New Game, 1 Load Game (→ `FUN_0089e310` → state 0x32), 2 Wrecking Crew, 3 multiplayer, 4 Bonus Campaign (DLC), then Options, Back, Exit.
+- Save/load screen: `FUN_0089ddb0` builds the list once when the screen opens (entries at `*0x02C08118`, 0xBC bytes each, count `0x02C0811C`, mode `0x02C0812C` 0 = load), sorted by `FUN_0089d9f0`: grouped by save type, then newest first (time fields +0x1C year since 2000, +0x18 month, +0x14 day, +0x20 hour, +0x24 minute, +0x28 second). Loading: `FUN_007e7650(entry, 0)` (→ GS_VERIFY_SAVEGAME 0x37) and `0x02C08108` = 1. Autostart picks the newest entry by date.
+- All saves live in Steam Cloud `userdata\<id>\667720\remote\autocloud\save\keen_savegame_0_0.sav` (one 31 MB file holding the slots).
