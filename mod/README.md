@@ -24,8 +24,10 @@ Valve Index).
 - **Menus and loading.** Outside gameplay (main menu, pause, map, options, death screen, loading)
   the game renders its normal flat view with the menu, shown on a fixed screen in front of the
   player.
-- **Comfort.** Camera shake and the third-person camera's vertical look input are removed (see
-  the settings below).
+- **Comfort.** Camera shake and, while the headset shows the game, the third-person camera's
+  vertical look input are removed (see the settings below).
+- **Mouse in menus.** Mouse positions are scaled from the window size to the render size so menu
+  pointers line up, and while the headset shows the game the cursor is kept inside the window.
 
 Engine addresses are for the Steam `rfg.exe` (PE timestamp `0x5B9B718A`). On any other build the
 engine hooks stay off. How the addresses were found is written up in
@@ -39,6 +41,7 @@ engine hooks stay off. How the addresses were found is written up in
 | `d3d11_hook.cpp` | `D3D11CreateDevice` hook, then `Present`/`ResizeBuffers` hooks through a dummy swapchain; logs fps and address space |
 | `camera_hook.cpp` | Engine hooks: main view setup, `rl_camera::render_begin`, swapchain resize, camera update (head aim), camera shake, third-person camera (pitch lock) |
 | `hud.cpp` | UI pass capture into the HUD texture |
+| `mouse.cpp` | Engine window procedure hook (menu pointer scaling), cursor confinement in VR |
 | `xr.cpp` | OpenXR session, frame loop, eye, HUD and screen layers, render size |
 | `gamestate.cpp` | The game's state (gameplay vs. menus), read once per frame |
 | `vrmath.h` | Pose conversion between OpenXR (right-handed) and the game (left-handed) |
@@ -91,10 +94,11 @@ together.
 Camera shake is off by default. That covers every shake, including the constant idle sway while
 standing, and the controller rumble and blur that come with them; the shake sounds still play.
 
-`LockCameraPitch=1` (the default) keeps the on-foot camera at a level orbit. The mouse and stick
-only turn it around the character, and up and down comes from the headset. With `HeadAim=1` the
-game aims where you look; with `HeadAim=0` it aims along the camera, so shots stay level while the
-pitch is locked. Vehicle and turret cameras aren't affected by the pitch lock.
+`LockCameraPitch=1` (the default) keeps the on-foot camera at a level orbit while the headset
+shows the game: the mouse and stick only turn it around the character, and up and down comes from
+the headset. On the flat screen the camera pitches as usual. With `HeadAim=1` the game aims where
+you look; with `HeadAim=0` it aims along the camera, so shots stay level while the pitch is locked.
+Vehicle and turret cameras aren't affected by the pitch lock.
 
 Optional flag files next to the DLL:
 
@@ -115,5 +119,4 @@ containing `667720`.
   resume.
 - While the HUD panel is active, the desktop window shows the 3D view without the UI.
 - The desktop window shows the eye image squeezed to the window's aspect ratio.
-- Menus render at the eye resolution, so mouse positions in menus may not match the pointer.
 - The process runs close to the 32-bit address-space limit (about 3.1 GB used, see the log).

@@ -38,6 +38,10 @@ void markEyeRendered(int eye, uint32_t set, const XrPosef& pose, const XrFovf& r
 // Game thread: the head orientation (LOCAL space) of the open headset frame.
 bool headOrientation(XrQuaternionf& out);
 
+// True while the headset shows the game (session running and frames rendered). Written on the
+// Present thread; a slightly stale read from the game thread is harmless.
+bool stereoActive();
+
 // Present thread: true while stereo frames are being shown, i.e. the in-game UI should be captured
 // into the HUD layer instead of the eye images.
 bool hudCaptureWanted();

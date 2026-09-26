@@ -550,10 +550,12 @@ bool headOrientation(XrQuaternionf& out) {
     return true;
 }
 
-bool hudCaptureWanted() {
-    return g_phase == Phase::Ready && g_running && g_frameOpen && g_frameState.shouldRender && g_idlePresents < 2 &&
-           gamestate::gameplay();
+bool stereoActive() {
+    // shouldRender is false while the headset is not worn / the app is not visible in it.
+    return g_phase == Phase::Ready && g_running && g_frameOpen && g_frameState.shouldRender;
 }
+
+bool hudCaptureWanted() { return stereoActive() && g_idlePresents < 2 && gamestate::gameplay(); }
 
 bool eyeRenderSize(uint32_t& w, uint32_t& h) {
     if (!g_haveFov || !g_recW[0] || !g_recH[0]) return false;

@@ -14,6 +14,7 @@
 #include "gamestate.h"
 #include "hud.h"
 #include "log.h"
+#include "mouse.h"
 #include "vrmath.h"
 #include "xr.h"
 
@@ -244,10 +245,11 @@ void __cdecl hkCameraUpdate() {
     g_headAimed = true;
 }
 
-// With LockCameraPitch=1 the third-person camera always orbits level: mouse and stick only turn it
-// around the player, and the player looks up and down with the headset.
+// With LockCameraPitch=1, while the headset shows the game, the third-person camera always orbits
+// level: mouse and stick only turn it around the player, and the player looks up and down with the
+// headset. On the flat screen the camera pitches as usual.
 void __cdecl hkThirdPerson() {
-    if (config::lockCameraPitch()) *at<float>(kLookPitchVa) = 0.f;
+    if (config::lockCameraPitch() && xr::stereoActive()) *at<float>(kLookPitchVa) = 0.f;
     g_thirdPerson.ccall<void>();
 }
 
@@ -282,6 +284,7 @@ bool install() {
     g_shakeEval = hookChecked(kShakeEvalVa, shakeEval, reinterpret_cast<void*>(&hkShakeEval), "camera shake");
     g_thirdPerson = hookChecked(kThirdPersonUpdateVa, thirdPerson, reinterpret_cast<void*>(&hkThirdPerson), "third-person camera");
     bool uiPass = hud::installEngineHook();
+    bool wndProc = mouse::install();
     // mov eax,[camera target handle] ; sub esp,0x6C ; push esi ; push eax
     static const uint8_t cameraUpdate[] = {0x83, 0xEC, 0x6C, 0x56, 0x50};
     if (*at<uint8_t>(kCameraUpdateVa) == 0xA1 && memcmp(at<uint8_t>(kCameraUpdateVa) + 5, cameraUpdate, sizeof cameraUpdate) == 0)
@@ -290,10 +293,10 @@ bool install() {
         LOG("camera update at %p does not match the expected bytes; not hooked", at<void>(kCameraUpdateVa));
 
     LOG("Engine hooks: main view setup %s, render_begin %s, swapchain resize %s, camera shake %s, third-person camera %s, "
-        "UI pass %s, camera update %s",
+        "UI pass %s, camera update %s, window procedure %s",
         g_mainViewSetup ? "ok" : "FAILED", g_renderBegin ? "ok" : "FAILED", g_swapchainResize ? "ok" : "FAILED",
         g_shakeEval ? "ok" : "FAILED", g_thirdPerson ? "ok" : "FAILED", uiPass ? "ok" : "FAILED",
-        g_cameraUpdate ? "ok" : "FAILED");
+        g_cameraUpdate ? "ok" : "FAILED", wndProc ? "ok" : "FAILED");
     return g_mainViewSetup && g_renderBegin && g_swapchainResize;
 }
 

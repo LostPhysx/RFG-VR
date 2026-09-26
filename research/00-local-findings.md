@@ -175,3 +175,9 @@ Open issues: resolution is the window backbuffer (1280x720 per eye); HUD is bake
 - Main menu items (`FUN_008f7e40`, handler `0x8F7C30`): 0 New Game, 1 Load Game (→ `FUN_0089e310` → state 0x32), 2 Wrecking Crew, 3 multiplayer, 4 Bonus Campaign (DLC), then Options, Back, Exit.
 - Save/load screen: `FUN_0089ddb0` builds the list once when the screen opens (entries at `*0x02C08118`, 0xBC bytes each, count `0x02C0811C`, mode `0x02C0812C` 0 = load), sorted by `FUN_0089d9f0`: grouped by save type, then newest first (time fields +0x1C year since 2000, +0x18 month, +0x14 day, +0x20 hour, +0x24 minute, +0x28 second). Loading: `FUN_007e7650(entry, 0)` (→ GS_VERIFY_SAVEGAME 0x37) and `0x02C08108` = 1. Autostart picks the newest entry by date.
 - All saves live in Steam Cloud `userdata\<id>\667720\remote\autocloud\save\keen_savegame_0_0.sav` (one 31 MB file holding the slots).
+
+## Mouse and cursor (2026-09-26)
+
+- Input is Raw Input plus window messages. The engine subclasses the game window with `FUN_00c7d070` (LRESULT __stdcall wndproc), which passes messages to `FUN_00c7cb70`. With the cursor visible (menus) WM_MOUSEMOVE client coordinates become the menu pointer position; the menus are laid out for the backbuffer, which the mod enlarges to the headset eye size, so the mod scales mouse-message coordinates by render size / client size outside gameplay.
+- In gameplay the cursor is hidden and recentred in the window (`FUN_00c75430`, SetCursorPos to the client centre); look input is the offset from that centre. Scaling coordinates there makes the camera spin, so gameplay messages pass through unchanged.
+- Cursor mode: `FUN_00c75320(input, show, clip)` hides the cursor and ClipCursor()s it to the client rect only while hidden (gameplay); in menus it is released. While the headset shows the game and the window has focus, the mod keeps the cursor clipped to the window.

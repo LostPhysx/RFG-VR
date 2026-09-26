@@ -14,6 +14,7 @@
 #include "gamestate.h"
 #include "hud.h"
 #include "log.h"
+#include "mouse.h"
 #include "xr.h"
 
 namespace rfgvr::d3d11 {
@@ -67,6 +68,7 @@ static HRESULT STDMETHODCALLTYPE hkPresent(IDXGISwapChain* sc, UINT syncInterval
     gamestate::update();
     autostart::onPresent();
     hud::onPresent(sc);
+    mouse::onPresent(sc);
     xr::onPresent(sc);  // before Present: the backbuffer holds the finished frame
     return g_present.stdcall<HRESULT>(sc, syncInterval, flags);
 }

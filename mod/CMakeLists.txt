@@ -36,6 +36,7 @@ add_library(rfg_vr SHARED
     src/xr.cpp
     src/camera_hook.cpp
     src/hud.cpp
+    src/mouse.cpp
     src/autostart.cpp
     src/gamestate.cpp
     src/video_hook.cpp
