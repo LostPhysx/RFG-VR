@@ -119,3 +119,14 @@ Open issues: resolution is the window backbuffer (1280x720 per eye); HUD is bake
 - Every frame `FUN_00c6dd00` reads the game window's client rect and calls the keen swapchain resize `FUN_00c6ab20` (bool __cdecl(RenderSwapChain*, w, h); RenderSwapChain+0x13C = IDXGISwapChain*, +0x140/+0x144 = current size), then beginFrame `FUN_00c6abd0`. The resize only acts on a size change: DXGI ResizeBuffers, then `FUN_00c61e90` recreates RTV and depth from the actual buffer size (DXGI_SWAP_CHAIN_DESC lives at RenderSwapChain+0x140).
 - The mod hooks `FUN_00c6ab20` and passes the headset per-eye size instead: SteamVR recommended pixel density (2036x2260 on the Index) spread over the symmetric frustum that covers both eyes' fov (+5% margin) = **2544x2376**.
 - Result: 235-239 game fps at 2544x2376 on an RTX 3070, so the 2-game-frames-per-headset-frame scheme delivers 120 Hz stereo (each eye 120 Hz), 0 stale images.
+
+## World scale (2026-09-26)
+
+- Measured in game: player head (`human_get_head_pos_orient`, VA `0xA9B5D0`, cdecl `(human*, vector&, matrix&)`) is 1.58 units above the feet (`object::pos` at +4 of the local player, ptr global `0x03023874`). **1 game unit = 1 m.** The third-person camera sits 2.6 m behind the head, at head height.
+- Headset side: eye separation 65.6 mm; the submitted fov matches the engine's projection exactly (image aspect 1.0707 = tangent aspect). The stereo is therefore geometrically 1:1; the "small world" impression in third person is perceptual. `WorldScale` in `rfg-vr.ini` divides the head/eye offset.
+
+## Camera shake (2026-09-26)
+
+- Game option: `DAT_025359bd` = "camera shake disabled" (config key `camera_shake` in section `game`, stored inverted), copied to the runtime flag `DAT_01648859` (1 = enabled) by `FUN_007ce8a0`.
+- Shake start `FUN_006c6e00(camera_shake*, float intensity, bool ignore_disabled)` fills one of 5 active slots: `0x01DE4554` (camera_shake*[5]), elapsed `0x01DE4520`, intensity `0x01DE4888`. `FUN_006d4980` (building_stress) and `FUN_006d4340` (shard_impact_nearby/strong) do the same inline. Shakes marked ignore_disabled (weapon fire, kaboom) bypass the option.
+- `FUN_006ccdf0` (called from camera update `FUN_006dffa0`) evaluates the slots each frame and multiplies the result into `real_orient` (`0x01DE4BA0`), plus shake blur (`FUN_007f1000`) and pad rumble (`FUN_00567fc0`). The mod hooks it and clears the slots first, which removes every shake including the permanent idle sway `player_standing`.

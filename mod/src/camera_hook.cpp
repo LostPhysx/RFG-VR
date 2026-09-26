@@ -10,6 +10,7 @@
 #include <cstring>
 #include <mutex>
 
+#include "config.h"
 #include "log.h"
 #include "vrmath.h"
 #include "xr.h"
@@ -41,6 +42,13 @@ constexpr uintptr_t kRenderBeginVa = 0x537660;
 // resizes the DXGI buffers and recreates the engine's render targets from them.
 constexpr uintptr_t kSwapchainResizeVa = 0xC6AB20;
 
+// Camera shake. Every shake start (FUN_006c6e00 and two inlined copies for building stress and
+// shard impacts) puts the camera_shake* into one of 5 active slots; FUN_006ccdf0 evaluates the
+// slots once per camera update and adds the result to real_orient (also shake blur and pad rumble).
+constexpr uintptr_t kShakeEvalVa = 0x6CCDF0;
+constexpr uintptr_t kShakeSlotsVa = 0x01DE4554;  // camera_shake* [5]
+constexpr int kShakeSlots = 5;
+
 // Partial rl_camera (sizeof 0x5C0), offsets from FUN_00520d70 (perspective setup).
 struct rl_camera {
     uint8_t pad00[0x2C];
@@ -60,6 +68,7 @@ static_assert(offsetof(rl_camera, type) == 0x59C);
 SafetyHookInline g_mainViewSetup;
 SafetyHookInline g_renderBegin;
 SafetyHookInline g_swapchainResize;
+SafetyHookInline g_shakeEval;
 uintptr_t g_base = 0;
 DWORD g_presentThread = 0;
 
@@ -84,12 +93,13 @@ T* at(uintptr_t va) {
 rl_camera* mainCamera() { return *at<rl_camera*>(kMainCameraPtrVa); }
 
 // Eye pose in the game world: orientation = game camera yaw * head orientation; position = game
-// camera position + head/eye offset in the yaw frame.
+// camera position + head/eye offset in the yaw frame. The game is in metres; WorldScale divides the
+// offset, so eye separation and head movement shrink and the world looks proportionally bigger.
 void applyEye(float* pos, float* orient, const xr::RenderPose& rp) {
     Basis game{{orient[0], orient[1], orient[2]}, {orient[3], orient[4], orient[5]}, {orient[6], orient[7], orient[8]}};
     Basis yaw = yawOnly(game);
     Basis world = compose(basisFromQuat(orientationToLh(rp.pose.orientation)), yaw);
-    Vec3 offset = toParent(yaw, positionToLh(rp.pose.position));
+    Vec3 offset = toParent(yaw, positionToLh(rp.pose.position)) * (1.f / config::worldScale());
     const Vec3 rows[3] = {world.r, world.u, world.f};
     for (int i = 0; i < 3; ++i) {
         orient[i * 3 + 0] = rows[i].x;
@@ -102,6 +112,7 @@ void applyEye(float* pos, float* orient, const xr::RenderPose& rp) {
 }
 
 void __cdecl hkMainViewSetup(void* arg) {
+    config::poll();
     xr::RenderPose rp{};
     if (!xr::renderPose(rp)) {
         g_mainViewSetup.ccall<void>(arg);
@@ -174,6 +185,21 @@ uint8_t __cdecl hkSwapchainResize(void* swapchain, int w, int h) {
     return g_swapchainResize.ccall<uint8_t>(swapchain, w, h);
 }
 
+// With CameraShake=0, empty the active slots before evaluation: the shake contributes nothing and
+// the game's own bookkeeping continues (shake sounds still play when a shake starts).
+void __cdecl hkShakeEval() {
+    if (!config::cameraShake()) {
+        auto slots = at<const char*>(kShakeSlotsVa);  // camera_shake starts with char name[32]
+        static const char* lastLogged = nullptr;
+        for (int i = 0; i < kShakeSlots; ++i) {
+            if (!slots[i]) continue;
+            if (slots[i] != lastLogged) LOG("camera shake suppressed: %.31s", lastLogged = slots[i]);
+            slots[i] = nullptr;
+        }
+    }
+    g_shakeEval.ccall<void>();
+}
+
 template <size_t N>
 SafetyHookInline hookChecked(uintptr_t va, const uint8_t (&expect)[N], void* detour, const char* what) {
     if (memcmp(at<uint8_t>(va), expect, N) != 0) {
@@ -194,13 +220,17 @@ bool install() {
     static const uint8_t renderBegin[] = {0x8B, 0x44, 0x24, 0x04, 0x8B, 0x90, 0x78, 0x04, 0x00, 0x00, 0x89, 0x4A, 0x70};
     // push ebx ; mov ebx,[esp+0xC] ; push edi ; test ebx,ebx
     static const uint8_t resize[] = {0x53, 0x8B, 0x5C, 0x24, 0x0C, 0x57, 0x85, 0xDB};
+    // sub esp,0x2EC
+    static const uint8_t shakeEval[] = {0x81, 0xEC, 0xEC, 0x02, 0x00, 0x00};
 
     g_mainViewSetup = hookChecked(kMainViewSetupVa, mainView, reinterpret_cast<void*>(&hkMainViewSetup), "main view setup");
     g_renderBegin = hookChecked(kRenderBeginVa, renderBegin, reinterpret_cast<void*>(&hkRenderBegin), "render_begin");
     g_swapchainResize = hookChecked(kSwapchainResizeVa, resize, reinterpret_cast<void*>(&hkSwapchainResize), "swapchain resize");
+    g_shakeEval = hookChecked(kShakeEvalVa, shakeEval, reinterpret_cast<void*>(&hkShakeEval), "camera shake");
 
-    LOG("Engine hooks: main view setup %s, render_begin %s, swapchain resize %s", g_mainViewSetup ? "ok" : "FAILED",
-        g_renderBegin ? "ok" : "FAILED", g_swapchainResize ? "ok" : "FAILED");
+    LOG("Engine hooks: main view setup %s, render_begin %s, swapchain resize %s, camera shake %s",
+        g_mainViewSetup ? "ok" : "FAILED", g_renderBegin ? "ok" : "FAILED", g_swapchainResize ? "ok" : "FAILED",
+        g_shakeEval ? "ok" : "FAILED");
     return g_mainViewSetup && g_renderBegin && g_swapchainResize;
 }
 

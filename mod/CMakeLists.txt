@@ -29,6 +29,7 @@ set_target_properties(openxr_loader PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThread
 
 add_library(rfg_vr SHARED
     src/dllmain.cpp
+    src/config.cpp
     src/log.cpp
     src/d3d11_hook.cpp
     src/iat.cpp

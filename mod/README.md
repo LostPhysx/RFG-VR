@@ -30,6 +30,7 @@ engine hooks stay off. How the addresses were found is written up in
 | `xr.cpp` | OpenXR session, frame loop, eye and screen layers, render size |
 | `vrmath.h` | Pose conversion between OpenXR (right-handed) and the game (left-handed) |
 | `autostart.cpp`, `video_hook.cpp` | Dev convenience: start a new game and skip the intro cinematic |
+| `config.cpp` | `rfg-vr.ini` settings, reloaded when the file changes |
 | `log.cpp`, `iat.cpp` | Log file, import-table hook |
 
 ## Build
@@ -51,6 +52,22 @@ OpenXR SDK 1.1.63 static loader) are fetched automatically.
 
 To uninstall, delete `dinput8.dll`. The log is written to `rfg-vr.log` next to the DLL, or to
 `rfg-vr.<pid>.log` if that file is locked.
+
+Settings go in `rfg-vr.ini` next to the DLL. Saved changes apply within a second, even while the
+game is running.
+
+    [VR]
+    ; Apparent size of the world: 1 = life-size, 1.5 = everything looks 1.5x bigger.
+    WorldScale=1.0
+    ; 1 = keep the game's camera shake (explosions, hammer hits), 0 = no shake.
+    CameraShake=0
+
+The game world is in metres, so `WorldScale=1` is geometrically correct. From the third-person
+camera a larger value can still feel better, because it shrinks eye separation and head movement
+together.
+
+Camera shake is off by default. That covers every shake, including the constant idle sway while
+standing, and the controller rumble and blur that come with them; the shake sounds still play.
 
 Optional flag files next to the DLL:
 
