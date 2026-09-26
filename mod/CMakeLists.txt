@@ -31,6 +31,7 @@ add_library(rfg_vr SHARED
     src/dllmain.cpp
     src/game.cpp
     src/config.cpp
+    src/controllers.cpp
     src/log.cpp
     src/d3d11_hook.cpp
     src/xr.cpp
@@ -38,6 +39,7 @@ add_library(rfg_vr SHARED
     src/hud.cpp
     src/mouse.cpp
     src/gamestate.cpp
+    src/input.cpp
     src/dinput8.def)
 set_target_properties(rfg_vr PROPERTIES OUTPUT_NAME dinput8)
 target_compile_features(rfg_vr PRIVATE cxx_std_23)

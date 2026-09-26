@@ -16,6 +16,10 @@ the [main README](../README.md).
   and vehicle cameras get no vertical look input.
 - **HUD.** The engine's UI pass is redirected into a transparent texture, shown as an OpenXR quad.
 - **Screen.** Outside gameplay (menus, videos, loading) the game's flat image is shown on a quad.
+- **First person (in development, `FirstPerson=1`).** On foot the camera is at the character's
+  position with the real eye height; the character is hidden, walks where the head looks and
+  follows real steps (room-scale). With motion controllers, aiming and the equipped weapon follow
+  the right hand, and the controllers' buttons and sticks are added to the game's own input.
 - **Mouse.** Menu pointer coordinates are scaled to the render size; the cursor is kept in the
   window while the headset shows the game.
 
@@ -30,7 +34,9 @@ engine hooks stay off, and each hook checks the code it patches. How every addre
 | `dllmain.cpp`, `dinput8.def` | Proxy exports, hook installation |
 | `game.cpp` | Address translation, byte-checked hooks, paths |
 | `d3d11_hook.cpp` | `D3D11CreateDevice` and `Present` hooks, fps/address-space log |
-| `camera_hook.cpp` | Eye rendering, render size, head aim, pitch lock, camera shake |
+| `camera_hook.cpp` | Eye rendering, render size, head aim, pitch lock, camera shake, first person |
+| `controllers.cpp` | OpenXR actions for the motion controllers |
+| `input.cpp` | Controller input added to the game's analog and button getters |
 | `xr.cpp` | OpenXR session, frame loop, eye / HUD / screen layers |
 | `hud.cpp` | UI pass capture |
 | `mouse.cpp` | Menu mouse scaling, cursor confinement |

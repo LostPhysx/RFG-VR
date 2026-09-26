@@ -9,4 +9,7 @@ bool install();
 // Present thread, every frame.
 void onPresent();
 
+// Aiming follows the right controller (first person with controllers).
+bool handAimActive();
+
 }  // namespace rfgvr::camera

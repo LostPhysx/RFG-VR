@@ -42,6 +42,7 @@ To uninstall, delete `dinput8.dll` (and `rfg-vr.ini`). The mod writes `rfg-vr.lo
 | Setting | Default | Meaning |
 |---|---|---|
 | `HeadAim` | 1 | 1: aim with your head (the camera only turns horizontally with mouse/stick, the HUD follows your head). 0: aim with the mouse. On the flat screen the mouse always aims. |
+| `FirstPerson` | 0 | 1: first person on foot, with room-scale and motion controllers. **In development**, not in a release yet. |
 | `WorldScale` | 1.0 | Apparent size of the world. 1 is life-size (the game is in metres); 1.5 makes everything look 1.5× bigger. |
 | `CameraShake` | 0 | 1 keeps the game's camera shake. |
 | `HudLayer` | 1 | 0 draws the HUD into the 3D view instead of a separate panel. |

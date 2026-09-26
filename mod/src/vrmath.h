@@ -30,6 +30,7 @@ struct Basis {
 };
 
 inline Vec3 toParent(const Basis& b, Vec3 v) { return b.r * v.x + b.u * v.y + b.f * v.z; }
+inline Vec3 toLocal(const Basis& b, Vec3 v) { return {dot(v, b.r), dot(v, b.u), dot(v, b.f)}; }  // orthonormal b
 
 // child expressed in parent -> child expressed in the parent's parent
 inline Basis compose(const Basis& child, const Basis& parent) {

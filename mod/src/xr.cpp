@@ -16,7 +16,9 @@
 #include <string>
 #include <vector>
 
+#include "camera_hook.h"
 #include "config.h"
+#include "controllers.h"
 #include "game.h"
 #include "gamestate.h"
 #include "hud.h"
@@ -40,6 +42,7 @@ XrSystemId g_systemId = XR_NULL_SYSTEM_ID;
 XrSession g_session = XR_NULL_HANDLE;
 XrSpace g_space = XR_NULL_HANDLE;
 XrSpace g_viewSpace = XR_NULL_HANDLE;  // head-locked (HUD panel with head aim)
+XrSpace g_stageSpace = XR_NULL_HANDLE;  // floor level (first-person eye height)
 XrSessionState g_state = XR_SESSION_STATE_UNKNOWN;
 bool g_running = false;
 std::vector<int64_t> g_formats;
@@ -58,6 +61,10 @@ struct Swap {
 };
 Swap g_mirror;  // virtual screen (menus, videos, loading)
 Swap g_hud;     // UI panel over the stereo view
+Swap g_reticle;  // aim marker on the right controller's ray (hand aim)
+ID3D11Texture2D* g_reticleTex = nullptr;
+constexpr float kReticleDistance = 15.f;  // metres along the ray
+constexpr float kReticleAngle = 0.03f;    // size / distance
 
 struct Eye {
     Swap swap;
@@ -76,6 +83,8 @@ uint32_t g_idlePresents = 0;     // consecutive Presents without an eye image
 std::mutex g_viewMutex;  // the views are read on the game thread
 XrView g_views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
 bool g_viewsValid = false;
+float g_localHeight = 0.f;  // height of the LOCAL origin above the STAGE floor
+bool g_haveFloor = false;
 uint32_t g_viewSet = 0;       // id of the open headset frame's views
 uint32_t g_requests = 0;      // eye setups handed out for the current view set
 
@@ -122,12 +131,18 @@ void teardown(const char* why) {
     LOG("OpenXR teardown: %s", why);
     destroySwap(g_mirror);
     destroySwap(g_hud);
+    destroySwap(g_reticle);
+    if (g_reticleTex) g_reticleTex->Release();
+    g_reticleTex = nullptr;
     for (auto& e : g_eyes) {
         destroySwap(e.swap);
         e.have = false;
     }
     g_frameOpen = false;
+    controllers::destroy();
     if (g_viewSpace != XR_NULL_HANDLE) xrDestroySpace(g_viewSpace);
+    if (g_stageSpace != XR_NULL_HANDLE) xrDestroySpace(g_stageSpace);
+    g_stageSpace = XR_NULL_HANDLE;
     if (g_space != XR_NULL_HANDLE) xrDestroySpace(g_space);
     g_viewSpace = XR_NULL_HANDLE;
     if (g_session != XR_NULL_HANDLE) xrDestroySession(g_session);
@@ -239,6 +254,9 @@ Phase createSession(IDXGISwapChain* sc) {
     if (!XR_OK(xrCreateReferenceSpace(g_session, &rsci, &g_space))) return Phase::Disabled;
     rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
     if (!XR_OK(xrCreateReferenceSpace(g_session, &rsci, &g_viewSpace))) return Phase::Disabled;
+    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    if (!XR_OK(xrCreateReferenceSpace(g_session, &rsci, &g_stageSpace))) g_stageSpace = XR_NULL_HANDLE;
+    controllers::create(g_instance, g_session);
 
     uint32_t n = 0;
     if (!XR_OK(xrEnumerateSwapchainFormats(g_session, 0, &n, nullptr))) return Phase::Disabled;
@@ -373,6 +391,7 @@ void openFrame() {
     if (!XR_OK(xrBeginFrame(g_session, nullptr))) { teardown("xrBeginFrame failed"); return; }
     g_frameOpen = true;
     g_presentsInFrame = 0;
+    if (g_frameState.shouldRender) controllers::sync(g_session, g_space, g_frameState.predictedDisplayTime);
     g_eyes[0].have = g_eyes[1].have = false;
 
     std::scoped_lock lock(g_viewMutex);
@@ -391,6 +410,15 @@ void openFrame() {
     constexpr XrViewStateFlags kValid = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
     if (XR_OK(xrLocateViews(g_session, &vli, &vs, 2, &n, g_views)) && n == 2 && (vs.viewStateFlags & kValid) == kValid)
         g_viewsValid = true;
+    g_haveFloor = false;
+    if (g_stageSpace != XR_NULL_HANDLE) {
+        XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+        if (XR_OK(xrLocateSpace(g_space, g_stageSpace, g_frameState.predictedDisplayTime, &loc)) &&
+            (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)) {
+            g_localHeight = loc.pose.position.y;
+            g_haveFloor = true;
+        }
+    }
     if (g_viewsValid && !g_haveFov) {
         g_eyeFov[0] = g_views[0].fov;
         g_eyeFov[1] = g_views[1].fov;
@@ -400,13 +428,71 @@ void openFrame() {
 
 enum class Submit { Nothing, Stereo, Mono, Screen };
 
+// The reticle image: a white ring with a dark outline and a centre dot, premultiplied alpha, in the
+// backbuffer's format (copied into its swapchain every frame).
+bool reticle(DXGI_FORMAT format) {
+    constexpr UINT kSize = 64;
+    if (g_reticleTex) {
+        D3D11_TEXTURE2D_DESC d{};
+        g_reticleTex->GetDesc(&d);
+        if (d.Format != format) {
+            g_reticleTex->Release();
+            g_reticleTex = nullptr;
+        }
+    }
+    if (!g_reticleTex) {
+        std::vector<uint32_t> px(kSize * kSize);
+        for (UINT y = 0; y < kSize; ++y)
+            for (UINT x = 0; x < kSize; ++x) {
+                float dx = x + 0.5f - kSize / 2.f, dy = y + 0.5f - kSize / 2.f;
+                float r = std::sqrt(dx * dx + dy * dy);
+                uint32_t a = 0, c = 0;
+                if ((r > 18.f && r < 24.f) || r < 3.f) a = 255, c = 255;         // ring, dot
+                else if ((r > 16.f && r < 26.f) || r < 5.f) a = 160, c = 0;     // outline
+                px[y * kSize + x] = c | c << 8 | c << 16 | a << 24;               // RGBA or BGRA: grey
+            }
+        D3D11_TEXTURE2D_DESC d{};
+        d.Width = d.Height = kSize;
+        d.MipLevels = d.ArraySize = 1;
+        d.Format = format;
+        d.SampleDesc.Count = 1;
+        d.Usage = D3D11_USAGE_IMMUTABLE;
+        d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        D3D11_SUBRESOURCE_DATA init{px.data(), kSize * 4, 0};
+        if (FAILED(g_device->CreateTexture2D(&d, &init, &g_reticleTex))) return false;
+    }
+    D3D11_TEXTURE2D_DESC d{};
+    g_reticleTex->GetDesc(&d);
+    return ensureSwap(g_reticle, d, "reticle") && copyInto(g_reticle, g_reticleTex, d);
+}
+
+// The virtual screen is placed where the head looks when it appears (level, at head height) and
+// stays there while it is shown.
+bool g_screenPlaced = false;
+XrPosef g_screenPose{{0.f, 0.f, 0.f, 1.f}, {0.f, 0.f, -kScreenDistance}};
+
+void placeScreen() {
+    if (!g_viewsValid) return;
+    const XrQuaternionf& q = g_views[0].pose.orientation;
+    // Forward (-Z) rotated by the head orientation, projected onto the floor plane.
+    float fx = -2.f * (q.x * q.z + q.w * q.y), fz = -(1.f - 2.f * (q.x * q.x + q.y * q.y));
+    float yaw = std::atan2(-fx, -fz);  // rotation about +Y
+    XrVector3f head{(g_views[0].pose.position.x + g_views[1].pose.position.x) * 0.5f,
+                    (g_views[0].pose.position.y + g_views[1].pose.position.y) * 0.5f,
+                    (g_views[0].pose.position.z + g_views[1].pose.position.z) * 0.5f};
+    g_screenPose.orientation = {0.f, std::sin(yaw * 0.5f), 0.f, std::cos(yaw * 0.5f)};
+    g_screenPose.position = {head.x - std::sin(yaw) * kScreenDistance, head.y, head.z - std::cos(yaw) * kScreenDistance};
+    g_screenPlaced = true;
+}
+
 void endFrame(Submit what, ID3D11Texture2D* bb, const D3D11_TEXTURE2D_DESC& bd) {
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     XrCompositionLayerProjectionView pv[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
                                               {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     XrCompositionLayerQuad hudQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
-    const XrCompositionLayerBaseHeader* layers[2] = {};
+    const XrCompositionLayerBaseHeader* layers[3] = {};
+    XrCompositionLayerQuad reticleQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     uint32_t layerCount = 0;
 
     if (what == Submit::Stereo || what == Submit::Mono) {
@@ -443,17 +529,40 @@ void endFrame(Submit what, ID3D11Texture2D* bb, const D3D11_TEXTURE2D_DESC& bd) 
                 layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&hudQuad);
             }
         }
+
+        controllers::State cs;
+        if (camera::handAimActive() && controllers::state(cs) && cs.hand[controllers::kRight].active &&
+            reticle(bd.Format)) {
+            const XrPosef& aim = cs.hand[controllers::kRight].aim;
+            const XrQuaternionf& q = aim.orientation;
+            // -Z of the aim pose
+            XrVector3f dir{-2.f * (q.x * q.z + q.w * q.y), -2.f * (q.y * q.z - q.w * q.x),
+                           -(1.f - 2.f * (q.x * q.x + q.y * q.y))};
+            reticleQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+            reticleQuad.space = g_space;
+            reticleQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            reticleQuad.subImage.swapchain = g_reticle.handle;
+            reticleQuad.subImage.imageRect = {{0, 0}, {static_cast<int32_t>(g_reticle.w), static_cast<int32_t>(g_reticle.h)}};
+            reticleQuad.pose.orientation = q;
+            reticleQuad.pose.position = {aim.position.x + dir.x * kReticleDistance,
+                                         aim.position.y + dir.y * kReticleDistance,
+                                         aim.position.z + dir.z * kReticleDistance};
+            reticleQuad.size = {kReticleDistance * kReticleAngle, kReticleDistance * kReticleAngle};
+            layers[layerCount++] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&reticleQuad);
+        }
     } else if (what == Submit::Screen && bb && ensureSwap(g_mirror, bd, "mirror") && copyInto(g_mirror, bb, bd)) {
         quad.space = g_space;
         quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
         quad.subImage.swapchain = g_mirror.handle;
         quad.subImage.imageRect = {{0, 0}, {static_cast<int32_t>(g_mirror.w), static_cast<int32_t>(g_mirror.h)}};
-        quad.pose.orientation = {0.f, 0.f, 0.f, 1.f};
-        quad.pose.position = {0.f, 0.f, -kScreenDistance};
+        if (!g_screenPlaced) placeScreen();
+        quad.pose = g_screenPose;
         quad.size = {kScreenWidth, kScreenWidth * static_cast<float>(g_mirror.h) / static_cast<float>(g_mirror.w)};
         layers[0] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&quad);
         layerCount = 1;
     }
+
+    if (what == Submit::Stereo || what == Submit::Mono) g_screenPlaced = false;
 
     XrFrameEndInfo fe{XR_TYPE_FRAME_END_INFO};
     fe.displayTime = g_frameState.predictedDisplayTime;
@@ -530,6 +639,8 @@ bool renderPose(RenderPose& out) {
     out.set = g_viewSet;
     out.pose = g_views[eye].pose;
     out.fov = g_views[eye].fov;
+    out.haveFloor = g_haveFloor;
+    out.localHeight = g_localHeight;
     return true;
 }
 
@@ -538,6 +649,22 @@ bool headOrientation(XrQuaternionf& out) {
     std::scoped_lock lock(g_viewMutex);
     if (!g_frameOpen || !g_viewsValid) return false;
     out = g_views[0].pose.orientation;  // both eyes share the head's orientation
+    return true;
+}
+
+bool headPosition(XrVector3f& out) {
+    if (g_phase != Phase::Ready || !g_running) return false;
+    std::scoped_lock lock(g_viewMutex);
+    if (!g_frameOpen || !g_viewsValid) return false;
+    const XrVector3f &a = g_views[0].pose.position, &b = g_views[1].pose.position;
+    out = {(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f, (a.z + b.z) * 0.5f};
+    return true;
+}
+
+bool localHeight(float& out) {
+    std::scoped_lock lock(g_viewMutex);
+    if (!g_haveFloor) return false;
+    out = g_localHeight;
     return true;
 }
 

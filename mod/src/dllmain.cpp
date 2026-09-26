@@ -9,6 +9,7 @@
 #include "d3d11_hook.h"
 #include "game.h"
 #include "hud.h"
+#include "input.h"
 #include "log.h"
 #include "mouse.h"
 #include "version.h"
@@ -48,6 +49,7 @@ void onAttach() {
         rfgvr::camera::install();
         rfgvr::hud::installEngineHook();
         rfgvr::mouse::install();
+        rfgvr::input::install();
     }
 }
 

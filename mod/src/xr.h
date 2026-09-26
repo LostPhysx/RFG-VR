@@ -20,6 +20,8 @@ struct RenderPose {
     uint32_t set;  // headset frame this eye belongs to
     XrPosef pose;  // LOCAL space, OpenXR conventions
     XrFovf fov;
+    bool haveFloor;     // STAGE space available:
+    float localHeight;  // height of the LOCAL origin above the floor
 };
 
 // Game thread: the eye to render the main view for, if a headset frame is open.
@@ -29,6 +31,8 @@ bool renderPose(RenderPose& out);
 void markEyeRendered(int eye, uint32_t set, const XrPosef& pose, const XrFovf& fov);
 
 bool headOrientation(XrQuaternionf& out);  // game thread, LOCAL space
+bool headPosition(XrVector3f& out);        // game thread, LOCAL space (between the eyes)
+bool localHeight(float& out);              // height of the LOCAL origin above the floor (STAGE)
 bool stereoActive();                       // the headset shows the game
 bool hudCaptureWanted();                   // Present thread: capture the UI into the HUD panel
 

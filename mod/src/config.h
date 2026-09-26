@@ -8,6 +8,7 @@ void poll();  // game thread, once per frame (checks the file about once a secon
 float worldScale();
 bool cameraShake();
 bool headAim();
+bool firstPerson();
 bool hudLayer();
 float hudDistance();
 float hudWidth();
