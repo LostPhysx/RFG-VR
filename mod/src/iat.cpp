@@ -13,7 +13,8 @@ void* hook(HMODULE module, const char* dll, const char* function, void* replacem
 
     for (auto imp = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + dir.VirtualAddress); imp->Name; ++imp) {
         if (_stricmp(reinterpret_cast<const char*>(base + imp->Name), dll) != 0) continue;
-        auto names = reinterpret_cast<IMAGE_THUNK_DATA*>(base + (imp->OriginalFirstThunk ? imp->OriginalFirstThunk : imp->FirstThunk));
+        DWORD namesRva = imp->OriginalFirstThunk ? imp->OriginalFirstThunk : imp->FirstThunk;
+        auto names = reinterpret_cast<IMAGE_THUNK_DATA*>(base + namesRva);
         auto slots = reinterpret_cast<IMAGE_THUNK_DATA*>(base + imp->FirstThunk);
         for (; names->u1.AddressOfData; ++names, ++slots) {
             if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) continue;

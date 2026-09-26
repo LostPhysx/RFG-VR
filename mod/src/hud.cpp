@@ -11,15 +11,15 @@
 #include <unordered_map>
 
 #include "config.h"
+#include "game.h"
 #include "log.h"
 #include "xr.h"
 
 namespace rfgvr::hud {
 namespace {
 
-// Steam rfg.exe: int __thiscall FUN_00550830(queue, renderer), called only from the main view render
-// FUN_007cf730 on the Present thread. It walks the frame's 2D primitive queue; every UI quad is
-// drawn through FUN_00543b60 -> FUN_0052d690 onto the backbuffer (research/00-local-findings.md).
+// UI pass: int __thiscall(queue, renderer), draws the frame's 2D primitive queue (the whole in-game
+// UI) onto the backbuffer, right after the 3D main view on the Present thread.
 constexpr uintptr_t kUiPassVa = 0x550830;
 
 SafetyHookInline g_uiPass, g_omSetRT, g_omSetBlend;
@@ -51,9 +51,8 @@ bool isBackbuffer(ID3D11RenderTargetView* v) {
     return r == g_backbuffer;
 }
 
-// Same blend as the game's, but the alpha channel accumulates coverage (ONE, INV_SRC_ALPHA) and is
-// written whenever colour is, so drawing onto a transparent target yields premultiplied RGBA. Draws
-// that write no colour (stencil masks clipping subtitle and notification text) stay invisible.
+// The game's blend with alpha accumulating coverage (ONE, INV_SRC_ALPHA), so the transparent target
+// ends up premultiplied. Draws that write no colour (stencil masks for text) must stay invisible.
 ID3D11BlendState* coverageBlend(ID3D11BlendState* s) {
     if (!s) return nullptr;
     auto it = g_blendClones.find(s);
@@ -63,8 +62,9 @@ ID3D11BlendState* coverageBlend(ID3D11BlendState* s) {
     int n = d.IndependentBlendEnable ? 8 : 1;
     for (int i = 0; i < n; ++i) {
         auto& rt = d.RenderTarget[i];
-        if (rt.RenderTargetWriteMask & (D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE))
-            rt.RenderTargetWriteMask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
+        constexpr UINT8 kRgb =
+            D3D11_COLOR_WRITE_ENABLE_RED | D3D11_COLOR_WRITE_ENABLE_GREEN | D3D11_COLOR_WRITE_ENABLE_BLUE;
+        if (rt.RenderTargetWriteMask & kRgb) rt.RenderTargetWriteMask |= D3D11_COLOR_WRITE_ENABLE_ALPHA;
         if (rt.BlendEnable) {
             rt.SrcBlendAlpha = D3D11_BLEND_ONE;
             rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
@@ -85,7 +85,8 @@ bool ensureTarget() {
     D3D11_TEXTURE2D_DESC d{};
     bb->GetDesc(&d);
     bb->Release();
-    if (g_tex && d.Width == g_texDesc.Width && d.Height == g_texDesc.Height && d.Format == g_texDesc.Format) return true;
+    if (g_tex && d.Width == g_texDesc.Width && d.Height == g_texDesc.Height && d.Format == g_texDesc.Format)
+        return true;
     if (g_rtv) g_rtv->Release();
     if (g_tex) g_tex->Release();
     g_rtv = nullptr;
@@ -99,7 +100,8 @@ bool ensureTarget() {
     t.SampleDesc.Count = 1;
     t.Usage = D3D11_USAGE_DEFAULT;
     t.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-    if (FAILED(g_device->CreateTexture2D(&t, nullptr, &g_tex)) || FAILED(g_device->CreateRenderTargetView(g_tex, nullptr, &g_rtv))) {
+    if (FAILED(g_device->CreateTexture2D(&t, nullptr, &g_tex)) ||
+        FAILED(g_device->CreateRenderTargetView(g_tex, nullptr, &g_rtv))) {
         LOG("HUD: could not create the %ux%u capture target (fmt %d)", t.Width, t.Height, t.Format);
         if (g_tex) g_tex->Release();
         g_tex = nullptr;
@@ -110,7 +112,8 @@ bool ensureTarget() {
     return true;
 }
 
-void STDMETHODCALLTYPE hkOMSetRT(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv) {
+void STDMETHODCALLTYPE hkOMSetRT(ID3D11DeviceContext* c, UINT n, ID3D11RenderTargetView* const* rtvs,
+                                 ID3D11DepthStencilView* dsv) {
     if (g_capturing && c == g_ctx && GetCurrentThreadId() == g_presentThread) {
         g_redirected = n >= 1 && rtvs && isBackbuffer(rtvs[0]);
         g_requestedDsv = dsv;
@@ -138,10 +141,11 @@ void STDMETHODCALLTYPE hkOMSetBlend(ID3D11DeviceContext* c, ID3D11BlendState* b,
 }
 
 int __fastcall hkUiPass(void* self, void* /*edx*/, void* renderer) {
-    bool capture = GetCurrentThreadId() == g_presentThread && config::hudLayer() && xr::hudCaptureWanted() && ensureTarget();
+    bool capture =
+        GetCurrentThreadId() == g_presentThread && config::hudLayer() && xr::hudCaptureWanted() && ensureTarget();
     if (!capture) return g_uiPass.thiscall<int>(self, renderer);
 
-    // Take over the current bindings as if the game had just set them.
+    // Treat the current bindings as if the game had just set them.
     ID3D11RenderTargetView* rtv[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
     ID3D11DepthStencilView* dsv = nullptr;
     g_ctx->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtv, &dsv);
@@ -189,15 +193,9 @@ void installContextHooks(ID3D11Device* device) {
 }
 
 bool installEngineHook() {
-    auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    auto* p = reinterpret_cast<uint8_t*>(base + kUiPassVa - 0x400000);
-    // mov eax,[_tls_index] ; sub esp,0x18 ; push esi ; mov esi,ecx
-    static const uint8_t expect[] = {0x83, 0xEC, 0x18, 0x56, 0x8B, 0xF1};
-    if (p[0] != 0xA1 || memcmp(p + 5, expect, sizeof expect) != 0) {
-        LOG("HUD: UI pass at %p does not match the expected bytes; not hooked", p);
-        return false;
-    }
-    g_uiPass = safetyhook::create_inline(p, reinterpret_cast<void*>(&hkUiPass));
+    // after mov eax,[relocated _tls_index]: sub esp,0x18 ; push esi ; mov esi,ecx
+    g_uiPass = game::hook(kUiPassVa, {0x83, 0xEC, 0x18, 0x56, 0x8B, 0xF1}, &hkUiPass, "UI pass", 5);
+    LOG("HUD: UI pass hook %s", g_uiPass ? "ok" : "FAILED");
     return static_cast<bool>(g_uiPass);
 }
 
@@ -211,8 +209,7 @@ void onPresent(IDXGISwapChain* sc) {
     }
 }
 
-ID3D11Texture2D* latest() {
-    // Captured during this frame or the previous one (each eye is one game frame).
+ID3D11Texture2D* latest() {  // captured this frame or the previous one (one per eye)
     return g_tex && g_capturedAt && g_presents - g_capturedAt <= 2 ? g_tex : nullptr;
 }
 

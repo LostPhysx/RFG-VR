@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "game.h"
 #include "log.h"
 
 namespace rfgvr::config {
@@ -24,16 +25,6 @@ bool g_hudLayer = true;
 float g_hudDistance = 2.f;
 float g_hudWidth = 2.4f;
 
-std::wstring iniPath() {
-    HMODULE self = nullptr;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCWSTR>(&iniPath), &self);
-    wchar_t path[MAX_PATH];
-    GetModuleFileNameW(self, path, MAX_PATH);
-    std::wstring p = path;
-    return p.substr(0, p.find_last_of(L"\\/") + 1) + L"rfg-vr.ini";
-}
-
 float readFloat(const wchar_t* section, const wchar_t* key, float def, float lo, float hi) {
     wchar_t buf[64];
     GetPrivateProfileStringW(section, key, L"", buf, 64, g_path.c_str());
@@ -50,8 +41,7 @@ void load() {
     g_hudLayer = readFloat(L"VR", L"HudLayer", 1.f, 0.f, 1.f) != 0.f;
     g_hudDistance = readFloat(L"VR", L"HudDistance", 2.f, 0.3f, 20.f);
     g_hudWidth = readFloat(L"VR", L"HudWidth", 2.4f, 0.1f, 40.f);
-    LOG("config: WorldScale %.3f, CameraShake %d, HeadAim %d, HudLayer %d, HudDistance %.2f, "
-        "HudWidth %.2f%s",
+    LOG("config: WorldScale %.3f, CameraShake %d, HeadAim %d, HudLayer %d, HudDistance %.2f, HudWidth %.2f%s",
         g_worldScale, g_cameraShake, g_headAim, g_hudLayer, g_hudDistance, g_hudWidth,
         g_haveFile ? "" : " (no rfg-vr.ini, defaults)");
 }
@@ -63,7 +53,7 @@ void poll() {
     if (!g_path.empty() && now - g_lastCheck < 1000) return;
     g_lastCheck = now;
     bool first = g_path.empty();
-    if (first) g_path = iniPath();
+    if (first) g_path = game::pathNextToDll(L"rfg-vr.ini");
 
     WIN32_FILE_ATTRIBUTE_DATA fa{};
     bool have = GetFileAttributesExW(g_path.c_str(), GetFileExInfoStandard, &fa) != 0;

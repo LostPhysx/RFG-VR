@@ -2,13 +2,11 @@
 
 namespace rfgvr::camera {
 
-// Engine hooks for stereo rendering (Steam build only):
-//  - main view setup: renders the main camera from the current VR eye pose;
-//  - rl_camera::render_begin: tells the OpenXR side which eye the Present thread is drawing;
-//  - keen swapchain resize: renders at the headset's per-eye resolution.
+// Engine camera hooks (Steam build): per-eye rendering of the main view, eye identification at
+// render time, render size, head aim, pitch lock (on foot and in vehicles), camera shake.
 bool install();
 
-// Called at every Present, on the Present thread (before the original Present).
+// Present thread, every frame.
 void onPresent();
 
 }  // namespace rfgvr::camera

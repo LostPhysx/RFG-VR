@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "config.h"
+#include "game.h"
 #include "gamestate.h"
 #include "hud.h"
 #include "log.h"
@@ -24,10 +25,10 @@
 namespace rfgvr::xr {
 namespace {
 
-// Virtual screen placement in LOCAL space (SteamVR's seated origin; recenter via the dashboard).
-constexpr float kScreenDistance = 2.5f;   // metres in front of the origin, at origin height
-constexpr float kScreenWidth = 3.2f;      // metres; height follows the backbuffer aspect ratio
-constexpr uint64_t kRetryPresents = 600;  // ~2.5-5 s between xrGetSystem retries while no HMD
+// Virtual screen in LOCAL space (seated origin; recenter via the SteamVR dashboard), metres.
+constexpr float kScreenDistance = 2.5f;
+constexpr float kScreenWidth = 3.2f;
+constexpr uint64_t kRetryPresents = 600;  // between xrGetSystem retries while no headset is found
 
 enum class Phase { Uninit, Retry, Ready, Disabled };
 Phase g_phase = Phase::Uninit;
@@ -38,7 +39,7 @@ XrInstance g_instance = XR_NULL_HANDLE;
 XrSystemId g_systemId = XR_NULL_SYSTEM_ID;
 XrSession g_session = XR_NULL_HANDLE;
 XrSpace g_space = XR_NULL_HANDLE;
-XrSpace g_viewSpace = XR_NULL_HANDLE;  // head-locked, for the HUD panel with head aim
+XrSpace g_viewSpace = XR_NULL_HANDLE;  // head-locked (HUD panel with head aim)
 XrSessionState g_state = XR_SESSION_STATE_UNKNOWN;
 bool g_running = false;
 std::vector<int64_t> g_formats;
@@ -46,17 +47,17 @@ std::vector<int64_t> g_formats;
 ID3D11Device* g_device = nullptr;      // the game's device (AddRef'd via GetDevice)
 ID3D11DeviceContext* g_ctx = nullptr;  // its immediate context (AddRef'd)
 
-// A runtime swapchain sized like the game backbuffer so CopyResource works.
+// Runtime swapchain matching a game texture, so it can be filled with CopyResource.
 struct Swap {
     XrSwapchain handle = XR_NULL_HANDLE;
     std::vector<ID3D11Texture2D*> images;  // owned by the runtime; valid while handle lives
     uint32_t w = 0, h = 0;
     DXGI_FORMAT srcFormat = DXGI_FORMAT_UNKNOWN;  // backbuffer format this swapchain was built for
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;     // swapchain format
-    bool failed = false;                          // creation failed for this (w,h,srcFormat); don't retry
+    bool failed = false;                          // creation failed for this size/format; don't retry
 };
-Swap g_mirror;  // quad layer (menus etc.)
-Swap g_hud;     // quad layer over the stereo view: the captured in-game UI (premultiplied alpha)
+Swap g_mirror;  // virtual screen (menus, videos, loading)
+Swap g_hud;     // UI panel over the stereo view
 
 struct Eye {
     Swap swap;
@@ -66,21 +67,19 @@ struct Eye {
 };
 Eye g_eyes[2];
 
-// One headset frame spans two game frames: the game renders the left eye, then the right eye,
-// both from the same located views (same head pose), and only then is the frame submitted.
+// One headset frame spans two game frames (left eye, then right eye, same located views).
 bool g_frameOpen = false;
 XrFrameState g_frameState{XR_TYPE_FRAME_STATE};
 uint32_t g_presentsInFrame = 0;  // Presents since the headset frame was opened
-uint32_t g_idlePresents = 0;     // consecutive Presents without a 3D eye image (menus, loading)
+uint32_t g_idlePresents = 0;     // consecutive Presents without an eye image
 
-std::mutex g_viewMutex;  // guards the view set below: renderPose() runs on the game thread
+std::mutex g_viewMutex;  // the views are read on the game thread
 XrView g_views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
 bool g_viewsValid = false;
 uint32_t g_viewSet = 0;       // id of the open headset frame's views
 uint32_t g_requests = 0;      // eye setups handed out for the current view set
 
-// Image in the backbuffer at this Present, reported by the camera hook just before Present
-// (matched by camera position, so the game's thread latency does not matter).
+// Eye image in the backbuffer at this Present, reported by the camera hook.
 bool g_eyeRendered = false;
 int g_renderedEye = 0;
 uint32_t g_renderedSet = 0;
@@ -88,7 +87,7 @@ XrPosef g_renderedPose{};
 XrFovf g_renderedFov{};
 uint64_t g_staleImages = 0;
 
-// Per-eye render size: SteamVR's recommended size (pixel density) and the eye fov (last located).
+// SteamVR's recommended eye size (pixel density) and the eye fov.
 uint32_t g_recW[2] = {}, g_recH[2] = {};
 bool g_haveFov = false;
 XrFovf g_eyeFov[2] = {};
@@ -111,15 +110,7 @@ bool check(XrResult r, const char* what) {
 #define XR_OK(expr) check((expr), #expr)
 
 bool disabledByFile() {
-    // <dir of this dll>\rfg-vr-novr.txt switches the VR path off without removing the proxy.
-    HMODULE self = nullptr;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCWSTR>(&disabledByFile), &self);
-    wchar_t path[MAX_PATH];
-    GetModuleFileNameW(self, path, MAX_PATH);
-    std::wstring p = path;
-    p = p.substr(0, p.find_last_of(L"\\/") + 1) + L"rfg-vr-novr.txt";
-    return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES;
+    return GetFileAttributesW(game::pathNextToDll(L"rfg-vr-novr.txt").c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
 void destroySwap(Swap& s) {
@@ -198,7 +189,9 @@ Phase createSession(IDXGISwapChain* sc) {
     {
         uint32_t nv = 0;
         XrViewConfigurationView vcv[2] = {{XR_TYPE_VIEW_CONFIGURATION_VIEW}, {XR_TYPE_VIEW_CONFIGURATION_VIEW}};
-        if (XR_OK(xrEnumerateViewConfigurationViews(g_instance, g_systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &nv, vcv)) && nv == 2)
+        if (XR_OK(xrEnumerateViewConfigurationViews(g_instance, g_systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                                                    2, &nv, vcv)) &&
+            nv == 2)
             for (int i = 0; i < 2; ++i) {
                 g_recW[i] = vcv[i].recommendedImageRectWidth;
                 g_recH[i] = vcv[i].recommendedImageRectHeight;
@@ -266,7 +259,7 @@ bool ensureSwap(Swap& s, const D3D11_TEXTURE2D_DESC& bb, const char* name) {
     s.srcFormat = bb.Format;
     s.failed = true;  // cleared on success
 
-    // CopyResource / ResolveSubresource need a format from the backbuffer's typeless family.
+    // Copying needs a format from the source's typeless family.
     std::vector<DXGI_FORMAT> candidates{bb.Format};
     switch (bb.Format) {
         case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: candidates.push_back(DXGI_FORMAT_R8G8B8A8_UNORM); break;
@@ -314,7 +307,7 @@ bool ensureSwap(Swap& s, const D3D11_TEXTURE2D_DESC& bb, const char* name) {
     return true;
 }
 
-// Acquire an image, copy the backbuffer into it, release. False if the image could not be filled.
+// Acquire an image, copy `bb` into it, release. False if the image could not be filled.
 bool copyInto(Swap& s, ID3D11Texture2D* bb, const D3D11_TEXTURE2D_DESC& bd) {
     uint32_t idx = 0;
     XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
@@ -395,8 +388,8 @@ void openFrame() {
     uint32_t n = 0;
     g_views[0] = {XR_TYPE_VIEW};
     g_views[1] = {XR_TYPE_VIEW};
-    if (XR_OK(xrLocateViews(g_session, &vli, &vs, 2, &n, g_views)) && n == 2 &&
-        (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) && (vs.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT))
+    constexpr XrViewStateFlags kValid = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
+    if (XR_OK(xrLocateViews(g_session, &vli, &vs, 2, &n, g_views)) && n == 2 && (vs.viewStateFlags & kValid) == kValid)
         g_viewsValid = true;
     if (g_viewsValid && !g_haveFov) {
         g_eyeFov[0] = g_views[0].fov;
@@ -431,10 +424,9 @@ void endFrame(Submit what, ID3D11Texture2D* bb, const D3D11_TEXTURE2D_DESC& bd) 
         proj.views = pv;
         layers[0] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&proj);
         layerCount = 1;
-        if (what == Submit::Stereo && ++g_stereoFrames == 1) LOG("First stereo frame submitted (both eyes, same head pose)");
+        if (what == Submit::Stereo && ++g_stereoFrames == 1) LOG("First stereo frame submitted");
 
-        // In-game UI on a transparent panel centred on the aim direction: straight ahead of the head
-        // with head aim, else straight ahead in the room (the game camera's forward).
+        // UI panel centred on the aim direction: ahead of the head with head aim, else ahead in the room.
         if (ID3D11Texture2D* ui = hud::latest()) {
             D3D11_TEXTURE2D_DESC ud{};
             ui->GetDesc(&ud);
@@ -479,7 +471,7 @@ void endFrame(Submit what, ID3D11Texture2D* bb, const D3D11_TEXTURE2D_DESC& bd) 
             static_cast<unsigned long long>(g_staleImages));
 }
 
-// Called at every game Present (before the original, so the backbuffer holds the finished frame).
+// Every Present, before the original (the backbuffer holds the finished frame).
 void frame(IDXGISwapChain* sc) {
     if (!g_frameOpen) {
         openFrame();
@@ -489,7 +481,8 @@ void frame(IDXGISwapChain* sc) {
 
     ID3D11Texture2D* bb = nullptr;
     D3D11_TEXTURE2D_DESC bd{};
-    if (g_frameState.shouldRender && SUCCEEDED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&bb))))
+    if (g_frameState.shouldRender &&
+        SUCCEEDED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&bb))))
         bb->GetDesc(&bd);
 
     bool image = g_eyeRendered && gamestate::gameplay();  // outside gameplay: always the virtual screen
@@ -505,7 +498,7 @@ void frame(IDXGISwapChain* sc) {
                 e.fov = g_renderedFov;
             }
         } else {
-            ++g_staleImages;  // set up for an earlier headset frame; its pose no longer matches
+            ++g_staleImages;  // rendered for an earlier headset frame
         }
     } else {
         ++g_idlePresents;
@@ -513,7 +506,7 @@ void frame(IDXGISwapChain* sc) {
 
     bool complete = g_eyes[0].have && g_eyes[1].have;
     bool menu = g_idlePresents >= 2;
-    bool timeout = g_presentsInFrame >= 4;  // an eye went missing: do not stall the headset
+    bool timeout = g_presentsInFrame >= 4;  // an eye went missing: don't stall the headset
     if (!g_frameState.shouldRender || complete || menu || timeout) {
         Submit what = !g_frameState.shouldRender ? Submit::Nothing
                       : complete                 ? Submit::Stereo
@@ -529,12 +522,10 @@ void frame(IDXGISwapChain* sc) {
 }  // namespace
 
 bool renderPose(RenderPose& out) {
-    // Outside gameplay (menus over the world, loading) the game renders its own flat view, shown on
-    // the virtual screen.
     if (g_phase != Phase::Ready || !g_running || !gamestate::gameplay()) return false;
     std::scoped_lock lock(g_viewMutex);
     if (!g_frameOpen || !g_viewsValid) return false;
-    int eye = static_cast<int>(g_requests++ & 1);  // first setup of a headset frame: left, then right
+    int eye = static_cast<int>(g_requests++ & 1);  // left, then right
     out.eye = eye;
     out.set = g_viewSet;
     out.pose = g_views[eye].pose;
@@ -550,8 +541,7 @@ bool headOrientation(XrQuaternionf& out) {
     return true;
 }
 
-bool stereoActive() {
-    // shouldRender is false while the headset is not worn / the app is not visible in it.
+bool stereoActive() {  // shouldRender is false while the headset is off or shows something else
     return g_phase == Phase::Ready && g_running && g_frameOpen && g_frameState.shouldRender;
 }
 
@@ -559,13 +549,13 @@ bool hudCaptureWanted() { return stereoActive() && g_idlePresents < 2 && gamesta
 
 bool eyeRenderSize(uint32_t& w, uint32_t& h) {
     if (!g_haveFov || !g_recW[0] || !g_recH[0]) return false;
-    // Symmetric frustum that covers both eyes' asymmetric fov (what the engine renders), at the
-    // pixel density SteamVR recommends for the asymmetric one. (An off-centre projection would save
-    // ~25% of the pixels, but the engine's fog/atmosphere then renders wrong: the terrain turns orange.)
+    // Symmetric frustum covering both eyes' fov at SteamVR's pixel density. (An exact off-centre
+    // projection per eye breaks the engine's fog: the terrain turns orange.)
     float tanH = 0, tanV = 0, pptH = 0, pptV = 0;
     for (int i = 0; i < 2; ++i) {
         const XrFovf& f = g_eyeFov[i];
-        float l = std::tan(f.angleLeft), r = std::tan(f.angleRight), d = std::tan(f.angleDown), u = std::tan(f.angleUp);
+        float l = std::tan(f.angleLeft), r = std::tan(f.angleRight);
+        float d = std::tan(f.angleDown), u = std::tan(f.angleUp);
         tanH = std::max(tanH, std::max(std::fabs(l), std::fabs(r)));
         tanV = std::max(tanV, std::max(std::fabs(d), std::fabs(u)));
         pptH = std::max(pptH, g_recW[i] / (r - l));
@@ -577,11 +567,11 @@ bool eyeRenderSize(uint32_t& w, uint32_t& h) {
     return w >= 64 && h >= 64;
 }
 
-void markEyeRendered(int eye, uint32_t set, const XrPosef& pose, const XrFovf& renderedFov) {
+void markEyeRendered(int eye, uint32_t set, const XrPosef& pose, const XrFovf& fov) {
     g_renderedEye = eye;
     g_renderedSet = set;
     g_renderedPose = pose;
-    g_renderedFov = renderedFov;
+    g_renderedFov = fov;
     g_eyeRendered = true;
 }
 

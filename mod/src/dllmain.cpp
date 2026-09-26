@@ -1,5 +1,5 @@
-// rfg-vr: VR mod for Red Faction Guerrilla Re-Mars-tered (Steam, x86).
-// Loaded as a dinput8.dll proxy from the game folder; forwards DirectInput to the system DLL.
+// rfg-vr: VR mod for Red Faction Guerrilla Re-Mars-tered (Steam, x86), loaded as a dinput8.dll
+// proxy from the game folder. DirectInput calls are forwarded to the system DLL.
 #include <windows.h>
 #include <unknwn.h>
 
@@ -7,60 +7,61 @@
 
 #include "camera_hook.h"
 #include "d3d11_hook.h"
+#include "game.h"
+#include "hud.h"
 #include "log.h"
+#include "mouse.h"
+#include "version.h"
+#ifdef RFGVR_DEV
 #include "video_hook.h"
+#endif
 
 namespace {
 
-HMODULE g_self = nullptr;
 HMODULE g_realDinput8 = nullptr;
-
-// All engine addresses in the mod are for this Steam rfg.exe (SHA-256 0d52039e...2df4); the PE
-// timestamp is a cheap stand-in for hashing 25 MB at startup.
-constexpr DWORD kSteamExeTimestamp = 0x5B9B718A;  // 2018-09-14 08:30:02 UTC
-
-std::wstring moduleDir(HMODULE m) {
-    wchar_t path[MAX_PATH];
-    GetModuleFileNameW(m, path, MAX_PATH);
-    std::wstring s = path;
-    return s.substr(0, s.find_last_of(L"\\/") + 1);
-}
 
 FARPROC realProc(const char* name) {
     if (!g_realDinput8) {
         wchar_t sys[MAX_PATH];
-        GetSystemDirectoryW(sys, MAX_PATH);  // SysWOW64 for this 32-bit process via redirection
+        GetSystemDirectoryW(sys, MAX_PATH);  // SysWOW64 for this 32-bit process
         g_realDinput8 = LoadLibraryW((std::wstring(sys) + L"\\dinput8.dll").c_str());
-        if (!g_realDinput8) LOG("FATAL: could not load system dinput8.dll");
+        if (!g_realDinput8) LOG("FATAL: could not load the system dinput8.dll");
     }
     return g_realDinput8 ? GetProcAddress(g_realDinput8, name) : nullptr;
 }
 
 void onAttach() {
-    rfgvr::log::init((moduleDir(g_self) + L"rfg-vr.log").c_str());
-    HMODULE exe = GetModuleHandleW(nullptr);
-    auto nt = reinterpret_cast<IMAGE_NT_HEADERS*>(reinterpret_cast<BYTE*>(exe) +
-                                                  reinterpret_cast<IMAGE_DOS_HEADER*>(exe)->e_lfanew);
-    DWORD ts = nt->FileHeader.TimeDateStamp;
-    LOG("rfg-vr loaded. exe base %p, PE timestamp 0x%08lX (%s)", exe, ts,
-        ts == kSteamExeTimestamp ? "Steam build: known addresses apply" : "UNKNOWN build: address-based hooks disabled");
+    rfgvr::log::init(rfgvr::game::pathNextToDll(L"rfg-vr.log").c_str());
+    bool steam = rfgvr::game::isSteamBuild();
+#ifdef RFGVR_DEV
+    constexpr const char* kBuild = " (dev build)";
+#else
+    constexpr const char* kBuild = "";
+#endif
+    LOG("rfg-vr %s%s loaded; %s", RFGVR_VERSION, kBuild,
+        steam ? "Steam build" : "unknown game build: engine hooks disabled");
     rfgvr::d3d11::install();
+#ifdef RFGVR_DEV
     rfgvr::video::install();
-    if (ts == kSteamExeTimestamp) rfgvr::camera::install();
+#endif
+    if (steam) {
+        rfgvr::camera::install();
+        rfgvr::hud::installEngineHook();
+        rfgvr::mouse::install();
+    }
 }
 
 }  // namespace
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
-        g_self = inst;
         DisableThreadLibraryCalls(inst);
-        onAttach();  // log file + hook installation only; OpenXR starts at the first Present
+        onAttach();  // hooks only; OpenXR starts at the first Present
     }
     return TRUE;
 }
 
-// --- dinput8 forwarding exports (see dinput8.def) -------------------------------------------
+// dinput8 exports (see dinput8.def), forwarded to the system DLL.
 extern "C" HRESULT WINAPI DirectInput8Create(HINSTANCE inst, DWORD version, REFIID riid, LPVOID* out, IUnknown* outer) {
     using fn_t = HRESULT(WINAPI*)(HINSTANCE, DWORD, REFIID, LPVOID*, IUnknown*);
     auto fn = reinterpret_cast<fn_t>(realProc("DirectInput8Create"));

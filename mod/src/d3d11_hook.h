@@ -2,8 +2,8 @@
 
 namespace rfgvr::d3d11 {
 
-// Called from DllMain: only patches rfg.exe's import of D3D11CreateDevice (no D3D calls).
-// The Present/ResizeBuffers hooks are installed later, from inside the game's first device creation.
+// Hooks d3d11!D3D11CreateDevice; on the game's device it hooks Present (VR, HUD, mouse, autostart)
+// and the context calls the HUD capture needs.
 bool install();
 
 }  // namespace rfgvr::d3d11

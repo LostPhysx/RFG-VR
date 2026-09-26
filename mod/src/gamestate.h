@@ -2,15 +2,9 @@
 
 namespace rfgvr::gamestate {
 
-// The game's state machine (gameseq_get_state, RFGR_Types rfg/Game.h). Read once per frame on the
-// Present thread; state changes are logged.
-void update();
-
-// Current state, or -1 before the game runs / on other builds.
-int current();
-
-// True in normal play (GS_GAMEPLAY). Menus shown over the world (pause, map, options, weapon
-// cabinet, death screen, loading) are other states: VR then shows the flat game image as a screen.
-bool gameplay();
+// The game's state (gameseq_get_state; values in RFGR_Types rfg/Game.h), read once per frame.
+void update();  // Present thread
+int current();  // -1 before the game runs / on other builds
+bool gameplay();  // GS_GAMEPLAY; every other state (menus, videos, loading) shows the virtual screen
 
 }  // namespace rfgvr::gamestate

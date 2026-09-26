@@ -2,7 +2,7 @@
 /game/
 /tools/re/
 # build output
-build/
+build*/
 # Ghidra project databases (regenerate with re/ghidra/run-analyze.cmd) and script output
 /re/ghidra/*.gpr
 /re/ghidra/*.rep/

@@ -406,27 +406,7 @@ Context that drives the choice:
 
 ---
 
-## 7. Recommended plan of attack for RFG:R (derived from the above)
-
-1. **Recon (no code):**
-   - Read RSL/Reconstructor for known functions (camera, player, weapon fire, UI render, main loop).
-   - Take a RenderDoc capture of RFG:R: pass list, camera CB layout, UI pass, TAA/post-FX, shadow cascades, depth format.
-   - Run a Ghidra string search for dormant stereo code.
-   - Check the exe's import table to choose the proxy (dxgi.dll vs version.dll vs dinput8.dll).
-2. **M1, plumbing:**
-   - proxy DLL, SafetyHook, D3D11 device/swapchain hooks, ImGui overlay
-   - OpenXR session with `XR_KHR_D3D11_enable`
-   - copy the mono backbuffer into both eyes, or into a quad layer (a "virtual screen")
-3. **M2, head tracking with AFR:** hook the camera builder, apply the HMD pose with an off-axis projection per eye, and use frame parity for the eye. Fix basis and handedness. Filter the main camera.
-4. **M3, first-person conversion:** head-bone camera, head/neck hiding, decoupled pitch, body-yaw anchor, suppress camera shake and collision.
-5. **M4, synchronized stereo:** re-invoke the world render per eye in the same tick. Share once-per-frame state (shadows, particles, clocks). Handle or disable TAA and motion blur.
-6. **M5, controllers:** OpenXR actions to game input (ViGEm as a stop-gap), weapon attached to the controller, aim-ray and muzzle redirection, haptics.
-7. **M6, UI:** HUD to a quad layer, menu pointer, wrist HUD, 3D reticle.
-8. **M7, comfort and performance:** snap/smooth turn, vignette, recenter, resolution scale, vehicle/cutscene fallback cams, profiling.
-
----
-
-## 8. Source index (all verified in this session)
+## 7. Source index (all verified in this session)
 
 - Flat2VR Discord: https://discord.com/invite/flat2vr
 - Flat2VR Notion: https://beastsaber.notion.site/Flat2VR-Modding-Group-8eb9ae0535144eac843f428abb104de9

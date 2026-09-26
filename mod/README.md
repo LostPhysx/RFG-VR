@@ -1,119 +1,64 @@
 # rfg-vr mod
 
-An x86 `dinput8.dll` proxy for Red Faction Guerrilla Re-Mars-tered (Steam build). It forwards
-DirectInput to the system DLL and adds 6-DOF stereo VR through OpenXR (tested with SteamVR and a
-Valve Index).
+An x86 `dinput8.dll` proxy for the Steam build of Red Faction Guerrilla Re-Mars-tered. It forwards
+DirectInput to the system DLL and adds VR through OpenXR. Features, install and settings are in
+the [main README](../README.md).
 
-## What it does
+## How it works
 
-- **Stereo camera.** It hooks the engine's main view setup and renders the main camera from the
-  current eye pose. One OpenXR frame spans two game frames: the left eye, then the right eye, both
-  from the same head pose. The two images are submitted together.
-- **Eye pairing.** The camera is set up on a game thread and drawn one frame later on the Present
-  thread. Each image is matched to its eye by the camera position that eye's setup produced.
-- **Resolution.** It hooks the engine's per-frame swapchain resize. The game then renders at the
-  headset's per-eye size whatever the window size: SteamVR's recommended pixel density over a
-  symmetric view that covers both eyes (about 2520×2360 on the Index).
-- **Head aim.** After each camera update the game camera's orientation is set to its own heading
-  combined with the head orientation, so shooting, throwing and the crosshair follow the headset.
-  The camera orbit itself stays under mouse/stick control, horizontally only.
-- **HUD panel.** During gameplay the engine's UI pass (HUD, crosshair, subtitles, notifications) is
-  drawn into a separate transparent texture instead of the eye images. The headset shows it as a
-  flat panel in front of the player, locked to the head with head aim so the crosshair marks the
-  aim.
-- **Menus, videos and loading.** Outside gameplay (main menu, pause, map, options, death screen,
-  cutscene videos, loading) the game renders its normal flat view, shown on a fixed screen in front
-  of the player.
-- **Comfort.** Camera shake is removed, and with head aim the vertical look input of the on-foot and
-  vehicle cameras too (see the settings below).
-- **Videos.** Cutscene videos and loading screens play on the fixed screen like menus.
-- **Mouse in menus.** Mouse positions are scaled from the window size to the render size so menu
-  pointers line up, and while the headset shows the game the cursor is kept inside the window.
+- **Stereo.** The engine's main view setup is hooked to render the main camera from the current
+  eye pose. One OpenXR frame spans two game frames (left eye, then right eye) from the same head
+  pose; the images are matched to their eye by camera position and submitted together.
+- **Resolution.** The engine's per-frame swapchain resize is hooked, so the game renders at a
+  symmetric frustum covering both eyes at SteamVR's pixel density, whatever the window size.
+- **Head aim.** After each camera update the camera orientation is set to game yaw × head
+  orientation; aiming uses it, rendering uses the game's own orientation. With head aim the on-foot
+  and vehicle cameras get no vertical look input.
+- **HUD.** The engine's UI pass is redirected into a transparent texture, shown as an OpenXR quad.
+- **Screen.** Outside gameplay (menus, videos, loading) the game's flat image is shown on a quad.
+- **Mouse.** Menu pointer coordinates are scaled to the render size; the cursor is kept in the
+  window while the headset shows the game.
 
-Engine addresses are for the Steam `rfg.exe` (PE timestamp `0x5B9B718A`). On any other build the
-engine hooks stay off. How the addresses were found is written up in
-`../research/00-local-findings.md`.
+Engine addresses are for the Steam `rfg.exe` (PE timestamp `0x5B9B718A`); on other builds the
+engine hooks stay off, and each hook checks the code it patches. How every address was found is in
+[research/00-local-findings.md](../research/00-local-findings.md).
 
 ## Source files
 
 | File | Purpose |
 |---|---|
-| `dllmain.cpp`, `dinput8.def` | Proxy exports, build check, hook installation |
-| `d3d11_hook.cpp` | `D3D11CreateDevice` hook, then `Present`/`ResizeBuffers` hooks through a dummy swapchain; logs fps and address space |
-| `camera_hook.cpp` | Engine hooks: main view setup, `rl_camera::render_begin`, swapchain resize, camera update (head aim), camera shake, third-person camera (pitch lock) |
-| `hud.cpp` | UI pass capture into the HUD texture |
-| `mouse.cpp` | Engine window procedure hook (menu pointer scaling), cursor confinement in VR |
-| `xr.cpp` | OpenXR session, frame loop, eye, HUD and screen layers, render size |
-| `gamestate.cpp` | The game's state (gameplay vs. menus), read once per frame |
+| `dllmain.cpp`, `dinput8.def` | Proxy exports, hook installation |
+| `game.cpp` | Address translation, byte-checked hooks, paths |
+| `d3d11_hook.cpp` | `D3D11CreateDevice` and `Present` hooks, fps/address-space log |
+| `camera_hook.cpp` | Eye rendering, render size, head aim, pitch lock, camera shake |
+| `xr.cpp` | OpenXR session, frame loop, eye / HUD / screen layers |
+| `hud.cpp` | UI pass capture |
+| `mouse.cpp` | Menu mouse scaling, cursor confinement |
+| `gamestate.cpp` | The game's state (gameplay vs. menus) |
+| `config.cpp` | `rfg-vr.ini`, reloaded when it changes |
 | `vrmath.h` | Pose conversion between OpenXR (right-handed) and the game (left-handed) |
-| `autostart.cpp`, `video_hook.cpp` | Dev convenience: get past the title screen, load the newest save (or start a new game), skip the intro cinematic |
-| `config.cpp` | `rfg-vr.ini` settings, reloaded when the file changes |
-| `log.cpp`, `iat.cpp` | Log file, import-table hook |
+| `log.cpp` | Log file |
+| `autostart.cpp`, `video_hook.cpp`, `iat.cpp` | Dev build only, see below |
 
 ## Build
 
-This needs Visual Studio 2022 and CMake 3.24 or newer. The dependencies (SafetyHook 0.7.0 and the
-OpenXR SDK 1.1.63 static loader) are fetched automatically.
+Visual Studio 2022 and CMake 3.24 or newer; SafetyHook 0.7.0 and the OpenXR SDK 1.1.63 static
+loader are fetched automatically.
 
-    cmake -S . -B build -G "Visual Studio 17 2022" -A Win32 [-DRFGVR_DEPLOY=ON]
+    cmake -S . -B build -A Win32 [-DRFGVR_DEV=ON] [-DRFGVR_DEPLOY=ON]
     cmake --build build --config Release
 
-`-DRFGVR_DEPLOY=ON` copies `dinput8.dll` and its `.pdb` into `../game/`.
+- `-DRFGVR_DEPLOY=ON` copies `dinput8.dll` and its `.pdb` into `../game/`.
+- `-DRFGVR_DEV=ON` adds developer tools. With `rfg-vr-autostart.txt` next to the DLL, the game
+  passes the title screen and loads the newest save by itself; if the file contains `new`, it
+  starts a new game instead and skips its intro video. Release builds contain none of this.
+- `rfg-vr-novr.txt` next to the DLL disables VR (the hooks stay passive).
 
-## Use
+To launch `rfg.exe` directly, outside Steam, the game folder needs a `steam_appid.txt` containing
+`667720`.
 
-1. Copy `dinput8.dll` into the game folder, next to `rfg.exe`.
-2. Start SteamVR, then start the game. Put the headset on: the view switches to VR once the game
-   renders 3D.
-3. Recenter through the SteamVR dashboard if needed.
+## Log
 
-To uninstall, delete `dinput8.dll`. The log is written to `rfg-vr.log` next to the DLL, or to
-`rfg-vr.<pid>.log` if that file is locked.
-
-Settings go in `rfg-vr.ini` next to the DLL. Saved changes apply within a second, even while the
-game is running.
-
-    [VR]
-    ; Apparent size of the world: 1 = life-size, 1.5 = everything looks 1.5x bigger.
-    WorldScale=1.0
-    ; 1 = keep the game's camera shake (explosions, hammer hits), 0 = no shake.
-    CameraShake=0
-    ; 1 = aim with your head, 0 = aim with the mouse.
-    HeadAim=1
-    ; 1 = in-game UI on a separate panel in front of you, 0 = drawn into the 3D view.
-    HudLayer=1
-    ; Distance (metres) and width (metres) of the UI panel.
-    HudDistance=2.0
-    HudWidth=2.4
-
-The game world is in metres, so `WorldScale=1` is geometrically correct. From the third-person
-camera a larger value can still feel better, because it shrinks eye separation and head movement
-together.
-
-Camera shake is off by default. That covers every shake, including the constant idle sway while
-standing, and the controller rumble and blur that come with them; the shake sounds still play.
-
-`HeadAim=1` (the default): the game aims where you look. The mouse and stick only turn the on-foot
-and vehicle cameras around the character, up and down come from the headset, and the UI panel follows your head
-so the crosshair marks the aim. `HeadAim=0`: the mouse controls the camera fully, up and down
-included, the game aims along it, and the UI panel stays fixed in front of you. On the flat screen
-(headset off) the mouse always aims as usual. Turret cameras keep their mouse pitch.
-
-Optional flag files next to the DLL:
-
-| File | Effect |
-|---|---|
-| `rfg-vr-novr.txt` | Disable VR; the hooks stay passive |
-| `rfg-vr-autostart.txt` | Get past the title screen and load the newest save, skipping the intro cinematic. If the file contains `new`, start a new game instead (its autosave can overwrite progress) |
-
-For launching `rfg.exe` directly, outside Steam, the game folder also needs a `steam_appid.txt`
-containing `667720`.
-
-## Known limitations
-
-- There is no motion-controller input yet. Play with mouse and keyboard or a gamepad.
-- Thrown charges land less precisely than bullets with head aim (they are not perfectly precise
-  with mouse aim either).
-- While the HUD panel is active, the desktop window shows the 3D view without the UI.
-- The desktop window shows the eye image squeezed to the window's aspect ratio.
-- The process runs close to the 32-bit address-space limit (about 3.1 GB used, see the log).
+`rfg-vr.log` next to the DLL (`rfg-vr.<pid>.log` if locked): hook status, OpenXR session and
+frame statistics, game-state and camera-mode changes, and every 10 s the fps and the process's
+address-space use.

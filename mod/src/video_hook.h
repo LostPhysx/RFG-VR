@@ -2,8 +2,7 @@
 
 namespace rfgvr::video {
 
-// Logs every Bink video the game opens and, in auto-start mode (rfg-vr-autostart.txt), skips the
-// New Game intro cinematic by jumping it to its last frame.
+// Logs the Bink videos the game opens; with autostart, skips the New Game intro cinematic.
 bool install();
 
 }  // namespace rfgvr::video

@@ -2,8 +2,6 @@
 
 #include <windows.h>
 
-#include <safetyhook.hpp>
-
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -11,10 +9,9 @@
 #include <mutex>
 
 #include "config.h"
+#include "game.h"
 #include "gamestate.h"
-#include "hud.h"
 #include "log.h"
-#include "mouse.h"
 #include "vrmath.h"
 #include "xr.h"
 
@@ -22,88 +19,60 @@ namespace rfgvr::camera {
 namespace {
 
 using namespace vrmath;
+using game::at;
 
-// Steam rfg.exe (PE timestamp 0x5B9B718A) virtual addresses, image base 0x400000, rebased at runtime.
-// Findings and decompiler references: research/00-local-findings.md.
+// Game camera (RFGR_Types rfg_camera).
+constexpr uintptr_t kRfgCameraVa = 0x01DE4B50;
+constexpr uintptr_t kRealOrientOff = 0x50;     // matrix, rows: right, up, forward
+constexpr uintptr_t kRealFovOff = 0xBC;        // float, vertical degrees
+constexpr uintptr_t kRenderPosOff = 0x10C;
+constexpr uintptr_t kRenderOrientOff = 0x118;
+constexpr uintptr_t kMainCameraPtrVa = 0x1DE48E4;  // rl_camera* of the main view
 
-// FUN_007cfbd0, per-frame main view setup (game thread). Copies the game camera's render_pos,
-// render_orient and real_fov into the main rl_camera, then calls rl_camera::render_begin. Culling,
-// the GPU view and the projection all derive from those three fields.
+// Main view setup (game thread): copies render_pos/orient and real_fov into the main rl_camera.
 constexpr uintptr_t kMainViewSetupVa = 0x7CFBD0;
-constexpr uintptr_t kRfgCameraVa = 0x01DE4B50;   // game camera (RFGR_Types rfg_camera)
-constexpr uintptr_t kRealFovOff = 0xBC;          // float real_fov (vertical, degrees)
-constexpr uintptr_t kRenderPosOff = 0x10C;       // vector render_pos
-constexpr uintptr_t kRenderOrientOff = 0x118;    // matrix render_orient (rows: right, up, forward)
-constexpr uintptr_t kMainCameraPtrVa = 0x1DE48E4;  // rl_camera* main camera (FUN_006c95d0 returns it)
-
-// rl_camera::render_begin(this, rl_renderer*), __thiscall. The Present thread calls it for the main
-// camera right before drawing the frame it is about to present.
+// rl_camera::render_begin (__thiscall): the Present thread calls it before drawing a view.
 constexpr uintptr_t kRenderBeginVa = 0x537660;
-
-// keen render swapchain resize, bool __cdecl(RenderSwapChain*, width, height). FUN_00c6dd00 calls it
-// every frame with the window's client size before beginFrame; it only acts on a size change, then
-// resizes the DXGI buffers and recreates the engine's render targets from them.
+// keen swapchain resize, bool __cdecl(swapchain, w, h), called every frame with the window size.
 constexpr uintptr_t kSwapchainResizeVa = 0xC6AB20;
-
-
-// Camera shake. Every shake start (FUN_006c6e00 and two inlined copies for building stress and
-// shard impacts) puts the camera_shake* into one of 5 active slots; FUN_006ccdf0 evaluates the
-// slots once per camera update and adds the result to real_orient (also shake blur and pad rumble).
-constexpr uintptr_t kShakeEvalVa = 0x6CCDF0;
-constexpr uintptr_t kShakeSlotsVa = 0x01DE4554;  // camera_shake* [5]
-constexpr int kShakeSlots = 5;
-
-// On-foot camera: CAMERA_THIRD_PERSON_MODE (10), per-frame update FUN_006dd250 (camera mode table
-// 0x012CFC84, 5 pointers per mode, update at +0xC). It orbits the player at the angles stored in
-// lookaround_mode_params pitch / heading, which look input (mouse, stick) accumulates into.
-constexpr uintptr_t kThirdPersonUpdateVa = 0x6DD250;
-
-// Camera update FUN_006dffa0 (void, game thread): runs the mode update, sets real_pos/real_orient
-// from the ideal values, applies shake. Aiming, throwing and the crosshair ray use real_orient.
+// Camera update (game thread): mode update, real_pos/orient, shake. Aiming uses real_orient.
 constexpr uintptr_t kCameraUpdateVa = 0x6DFFA0;
-constexpr uintptr_t kRealOrientOff = 0x50;  // matrix real_orient (rfg_camera, rows: right, up, forward)
-constexpr uintptr_t kLookPitchVa = 0x01DE4D70;  // float lookaround pitch (rad)
-
-// Vehicle camera: CAMERA_FREE_MODE (0), update at 0x6D9780. Vertical look input accumulates into
-// free_mode_params user_elev (stick / relative mouse, rfg_camera+0x13C+0x34) and the absolute-mouse
-// pitch (+0xC8); the update hands them to its core FUN_006d7180 at this call, then applies them.
+// Shake evaluation: sums the 5 active shake slots into real_orient.
+constexpr uintptr_t kShakeEvalVa = 0x6CCDF0;
+constexpr uintptr_t kShakeSlotsVa = 0x01DE4554;  // camera_shake*[5]
+// On-foot camera (CAMERA_THIRD_PERSON_MODE) update; orbits at lookaround pitch/heading.
+constexpr uintptr_t kThirdPersonUpdateVa = 0x6DD250;
+constexpr uintptr_t kLookPitchVa = 0x01DE4D70;
+// Vehicle camera (CAMERA_FREE_MODE): call into its core update, which applies the look input.
 constexpr uintptr_t kFreeCamCoreCallVa = 0x6DA006;
-constexpr uintptr_t kFreeCamUserElevVa = 0x01DE4CC0;   // float user_elev
-constexpr uintptr_t kFreeCamMousePitchVa = 0x01DE4D54;  // float mouse pitch (absolute mouse mode)
+constexpr uintptr_t kFreeCamUserElevVa = 0x01DE4CC0;    // mouse / stick pitch input
+constexpr uintptr_t kFreeCamMousePitchVa = 0x01DE4D54;  // absolute-mouse pitch (vehicle_mouse_cam)
 
-// Partial rl_camera (sizeof 0x5C0), offsets from FUN_00520d70 (perspective setup).
-struct rl_camera {
+struct rl_camera {  // partial, sizeof 0x5C0
     uint8_t pad00[0x2C];
-    float pos[3];           // 0x02C
+    float pos[3];  // 0x02C
     uint8_t pad38[0xC0 - 0x38];
-    float proj[16];         // 0x0C0  row-major, left-handed, z 0..1
+    float proj[16];  // 0x0C0, row-major, left-handed
     uint8_t pad100[0x594 - 0x100];
-    float far_clip;         // 0x594
+    float far_clip;  // 0x594
     uint8_t pad598[0x59C - 0x598];
-    int32_t type;           // 0x59C  0 = perspective
+    int32_t type;  // 0x59C, 0 = perspective
 };
 static_assert(offsetof(rl_camera, pos) == 0x2C);
 static_assert(offsetof(rl_camera, proj) == 0xC0);
 static_assert(offsetof(rl_camera, far_clip) == 0x594);
 static_assert(offsetof(rl_camera, type) == 0x59C);
 
-SafetyHookInline g_mainViewSetup;
-SafetyHookInline g_renderBegin;
-SafetyHookInline g_swapchainResize;
-SafetyHookInline g_shakeEval;
-SafetyHookInline g_thirdPerson;
-SafetyHookInline g_cameraUpdate;
+SafetyHookInline g_mainViewSetup, g_renderBegin, g_swapchainResize, g_cameraUpdate, g_shakeEval, g_thirdPerson;
 SafetyHookMid g_freeCamPitch;
-
-// Head aim: real_orient holds game yaw * head orientation between camera updates. The game's own
-// orientation is kept here, restored before the next update and used as the base for rendering.
-bool g_headAimed = false;
-float g_gameOrient[9] = {};
-uintptr_t g_base = 0;
 DWORD g_presentThread = 0;
 
-// Recent eye setups (game thread). The Present thread identifies the eye it is drawing by the
-// camera position that setup produced, independent of the engine's thread latency.
+// Head aim: between camera updates real_orient holds game yaw * head; the game's own value is kept.
+bool g_headAimed = false;
+float g_gameOrient[9] = {};
+
+// Recent eye setups. The Present thread draws a view one frame after its setup and identifies the
+// eye by the camera position that setup produced.
 struct Setup {
     bool valid = false;
     int eye = 0;
@@ -115,76 +84,64 @@ std::mutex g_setupMutex;
 Setup g_ring[8];
 uint32_t g_ringNext = 0;
 
-template <typename T>
-T* at(uintptr_t va) {
-    return reinterpret_cast<T*>(g_base + (va - 0x400000));
+rl_camera* mainCamera() { return at<rl_camera*>(kMainCameraPtrVa); }
+
+Basis basisOf(const float* m) { return {{m[0], m[1], m[2]}, {m[3], m[4], m[5]}, {m[6], m[7], m[8]}}; }
+
+void store(float* m, const Basis& b) {
+    const Vec3 rows[3] = {b.r, b.u, b.f};
+    for (int i = 0; i < 3; ++i) {
+        m[i * 3 + 0] = rows[i].x;
+        m[i * 3 + 1] = rows[i].y;
+        m[i * 3 + 2] = rows[i].z;
+    }
 }
 
-rl_camera* mainCamera() { return *at<rl_camera*>(kMainCameraPtrVa); }
-
-// Eye pose in the game world: orientation = game camera yaw * head orientation; position = game
-// camera position + head/eye offset in the yaw frame. The game is in metres; WorldScale divides the
-// offset, so eye separation and head movement shrink and the world looks proportionally bigger.
+// Eye pose in the game: game yaw * eye orientation; camera position + eye offset (scaled by
+// 1/WorldScale) in the yaw frame.
 void applyEye(float* pos, float* orient, const xr::RenderPose& rp) {
-    Basis game{{orient[0], orient[1], orient[2]}, {orient[3], orient[4], orient[5]}, {orient[6], orient[7], orient[8]}};
-    Basis yaw = yawOnly(game);
-    Basis world = compose(basisFromQuat(orientationToLh(rp.pose.orientation)), yaw);
+    Basis yaw = yawOnly(basisOf(orient));
+    store(orient, compose(basisFromQuat(orientationToLh(rp.pose.orientation)), yaw));
     Vec3 offset = toParent(yaw, positionToLh(rp.pose.position)) * (1.f / config::worldScale());
-    const Vec3 rows[3] = {world.r, world.u, world.f};
-    for (int i = 0; i < 3; ++i) {
-        orient[i * 3 + 0] = rows[i].x;
-        orient[i * 3 + 1] = rows[i].y;
-        orient[i * 3 + 2] = rows[i].z;
-    }
     pos[0] += offset.x;
     pos[1] += offset.y;
     pos[2] += offset.z;
 }
 
 void __cdecl hkMainViewSetup(void* arg) {
-    static int lastMode = -1;  // rfg_camera::mode (camera_mode enum, RFGR_Types); on foot = 10
-    if (int mode = *at<int>(kRfgCameraVa); mode != lastMode) LOG("camera mode -> %d", lastMode = mode);
+    static int lastMode = -1;  // camera_mode: 10 on foot, 0 in vehicles
+    if (int mode = at<int>(kRfgCameraVa); mode != lastMode) LOG("camera mode -> %d", lastMode = mode);
     config::poll();
+
     xr::RenderPose rp{};
     if (!xr::renderPose(rp)) {
-        // No eye this frame (menus, videos, headset off): forget the eye setups, so that a frame drawn
-        // from an unchanged camera position is not mistaken for an eye image.
-        {
-            std::scoped_lock lock(g_setupMutex);
-            for (Setup& e : g_ring) e.valid = false;
-        }
+        // No eye this frame: drop old setups so an unchanged camera is not taken for an eye image.
+        std::scoped_lock lock(g_setupMutex);
+        for (Setup& e : g_ring) e.valid = false;
+    } else {
+        auto cam = &at<uint8_t>(kRfgCameraVa);
+        auto pos = reinterpret_cast<float*>(cam + kRenderPosOff);
+        auto orient = reinterpret_cast<float*>(cam + kRenderOrientOff);
+        auto fov = reinterpret_cast<float*>(cam + kRealFovOff);
+        float savedPos[3], savedOrient[9], savedFov = *fov;
+        memcpy(savedPos, pos, sizeof savedPos);
+        memcpy(savedOrient, orient, sizeof savedOrient);
+        if (g_headAimed) memcpy(orient, g_gameOrient, sizeof g_gameOrient);  // head is applied per eye
+
+        applyEye(pos, orient, rp);
+        *fov = coveringVerticalFovDeg(rp.fov);
         g_mainViewSetup.ccall<void>(arg);
+
+        if (rl_camera* c = mainCamera()) {
+            std::scoped_lock lock(g_setupMutex);
+            g_ring[g_ringNext++ % 8] = {true, rp.eye, rp.set, rp.pose, {c->pos[0], c->pos[1], c->pos[2]}};
+        }
+        memcpy(pos, savedPos, sizeof savedPos);
+        memcpy(orient, savedOrient, sizeof savedOrient);
+        *fov = savedFov;
         return;
     }
-
-    auto base = at<uint8_t>(kRfgCameraVa);
-    auto pos = reinterpret_cast<float*>(base + kRenderPosOff);
-    auto orient = reinterpret_cast<float*>(base + kRenderOrientOff);
-    auto fov = reinterpret_cast<float*>(base + kRealFovOff);
-    float savedPos[3], savedOrient[9], savedFov = *fov;
-    memcpy(savedPos, pos, sizeof savedPos);
-    memcpy(savedOrient, orient, sizeof savedOrient);
-    if (g_headAimed) memcpy(orient, g_gameOrient, sizeof g_gameOrient);  // render from the game yaw only
-
-    applyEye(pos, orient, rp);
-    *fov = coveringVerticalFovDeg(rp.fov);
-
     g_mainViewSetup.ccall<void>(arg);
-
-    if (rl_camera* c = mainCamera()) {
-        std::scoped_lock lock(g_setupMutex);
-        Setup& e = g_ring[g_ringNext++ % 8];
-        e.valid = true;
-        e.eye = rp.eye;
-        e.set = rp.set;
-        e.pose = rp.pose;
-        memcpy(e.camPos, c->pos, sizeof e.camPos);
-    }
-
-    // Restore the game camera so gameplay (aiming, camera smoothing) never sees the head pose.
-    memcpy(pos, savedPos, sizeof savedPos);
-    memcpy(orient, savedOrient, sizeof savedOrient);
-    *fov = savedFov;
 }
 
 void __fastcall hkRenderBegin(rl_camera* cam, void* /*edx*/, void* renderer) {
@@ -196,19 +153,20 @@ void __fastcall hkRenderBegin(rl_camera* cam, void* /*edx*/, void* renderer) {
     {
         std::scoped_lock lock(g_setupMutex);
         for (const Setup& e : g_ring)
-            if (e.valid && std::fabs(e.camPos[0] - cam->pos[0]) < 1e-4f && std::fabs(e.camPos[1] - cam->pos[1]) < 1e-4f &&
-                std::fabs(e.camPos[2] - cam->pos[2]) < 1e-4f && (!found.valid || e.set > found.set))
-                found = e;  // identical positions (head still): the newest setup wins
+            if (e.valid && std::fabs(e.camPos[0] - cam->pos[0]) < 1e-4f &&
+                std::fabs(e.camPos[1] - cam->pos[1]) < 1e-4f && std::fabs(e.camPos[2] - cam->pos[2]) < 1e-4f &&
+                (!found.valid || e.set > found.set))
+                found = e;  // head still, same position: the newest wins
     }
     if (!found.valid || cam->proj[0] <= 0.f || cam->proj[5] <= 0.f) return;
 
-    // Submit the fov the engine actually rendered (its symmetric projection).
+    // Submit the fov the engine rendered (its symmetric projection).
     float tanH = 1.f / cam->proj[0], tanV = 1.f / cam->proj[5];
     xr::markEyeRendered(found.eye, found.set, found.pose,
                         XrFovf{-std::atan(tanH), std::atan(tanH), std::atan(tanV), -std::atan(tanV)});
 }
 
-// Render at the headset's per-eye resolution instead of the window's client size.
+// Render at the headset eye size instead of the window size.
 uint8_t __cdecl hkSwapchainResize(void* swapchain, int w, int h) {
     uint32_t vw = 0, vh = 0;
     if (w > 0 && h > 0 && xr::eyeRenderSize(vw, vh)) {
@@ -224,23 +182,8 @@ uint8_t __cdecl hkSwapchainResize(void* swapchain, int w, int h) {
     return g_swapchainResize.ccall<uint8_t>(swapchain, w, h);
 }
 
-// With CameraShake=0, empty the active slots before evaluation: the shake contributes nothing and
-// the game's own bookkeeping continues (shake sounds still play when a shake starts).
-void __cdecl hkShakeEval() {
-    if (!config::cameraShake()) {
-        auto slots = at<const char*>(kShakeSlotsVa);  // camera_shake starts with char name[32]
-        static const char* lastLogged = nullptr;
-        for (int i = 0; i < kShakeSlots; ++i) {
-            if (!slots[i]) continue;
-            if (slots[i] != lastLogged) LOG("camera shake suppressed: %.31s", lastLogged = slots[i]);
-            slots[i] = nullptr;
-        }
-    }
-    g_shakeEval.ccall<void>();
-}
-
 void __cdecl hkCameraUpdate() {
-    auto real = reinterpret_cast<float*>(at<uint8_t>(kRfgCameraVa) + kRealOrientOff);
+    auto real = reinterpret_cast<float*>(&at<uint8_t>(kRfgCameraVa) + kRealOrientOff);
     if (g_headAimed) memcpy(real, g_gameOrient, sizeof g_gameOrient);
     g_headAimed = false;
     g_cameraUpdate.ccall<void>();
@@ -248,83 +191,55 @@ void __cdecl hkCameraUpdate() {
     XrQuaternionf head{};
     if (!config::headAim() || !gamestate::gameplay() || !xr::headOrientation(head)) return;
     memcpy(g_gameOrient, real, sizeof g_gameOrient);
-    Basis game{{real[0], real[1], real[2]}, {real[3], real[4], real[5]}, {real[6], real[7], real[8]}};
-    Basis aim = compose(basisFromQuat(orientationToLh(head)), yawOnly(game));
-    const Vec3 rows[3] = {aim.r, aim.u, aim.f};
-    for (int i = 0; i < 3; ++i) {
-        real[i * 3 + 0] = rows[i].x;
-        real[i * 3 + 1] = rows[i].y;
-        real[i * 3 + 2] = rows[i].z;
-    }
+    store(real, compose(basisFromQuat(orientationToLh(head)), yawOnly(basisOf(real))));
     g_headAimed = true;
 }
 
-// Head aim (HeadAim=1), while the headset shows the game: the third-person camera always orbits
-// level, mouse and stick only turn it around the player, and up and down come from the headset. With
-// mouse aim or on the flat screen the camera pitches as usual.
+// CameraShake=0: empty the active shake slots (sounds still play).
+void __cdecl hkShakeEval() {
+    if (!config::cameraShake()) memset(&at<void*>(kShakeSlotsVa), 0, 5 * sizeof(void*));
+    g_shakeEval.ccall<void>();
+}
+
+// Head aim in VR: no vertical look input for the on-foot and vehicle cameras.
+bool pitchLocked() { return config::headAim() && xr::stereoActive(); }
+
 void __cdecl hkThirdPerson() {
-    if (config::headAim() && xr::stereoActive()) *at<float>(kLookPitchVa) = 0.f;
+    if (pitchLocked()) at<float>(kLookPitchVa) = 0.f;
     g_thirdPerson.ccall<void>();
 }
 
-// Head aim in vehicles, while the headset shows the game: the free camera gets no vertical look input
-// (see kFreeCamCoreCallVa).
 void freeCamPitch(safetyhook::Context&) {
-    if (!config::headAim() || !xr::stereoActive()) return;
-    *at<float>(kFreeCamUserElevVa) = 0.f;    // mouse and stick (confirmed in a drive)
-    *at<float>(kFreeCamMousePitchVa) = 0.f;  // absolute mouse mode (vehicle_mouse_cam option)
+    if (!pitchLocked()) return;
+    at<float>(kFreeCamUserElevVa) = 0.f;
+    at<float>(kFreeCamMousePitchVa) = 0.f;
 }
 
-template <size_t N>
-SafetyHookInline hookChecked(uintptr_t va, const uint8_t (&expect)[N], void* detour, const char* what) {
-    if (memcmp(at<uint8_t>(va), expect, N) != 0) {
-        LOG("%s at %p does not match the expected bytes; not hooked", what, at<void>(va));
-        return {};
-    }
-    return safetyhook::create_inline(at<void>(va), detour);
+template <typename Hook>
+const char* ok(const Hook& h) {
+    return h ? "ok" : "FAILED";
 }
 
 }  // namespace
 
 bool install() {
-    g_base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    // The expected bytes are the functions' prologues.
+    g_mainViewSetup = game::hook(kMainViewSetupVa, {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81, 0xEC, 0xF4, 0x00},
+                                 &hkMainViewSetup, "main view setup");
+    g_renderBegin = game::hook(kRenderBeginVa, {0x8B, 0x44, 0x24, 0x04, 0x8B, 0x90, 0x78, 0x04, 0x00, 0x00},
+                               &hkRenderBegin, "render_begin");
+    g_swapchainResize = game::hook(kSwapchainResizeVa, {0x53, 0x8B, 0x5C, 0x24, 0x0C, 0x57, 0x85, 0xDB},
+                                   &hkSwapchainResize, "swapchain resize");
+    g_cameraUpdate = game::hook(kCameraUpdateVa, {0x83, 0xEC, 0x6C, 0x56, 0x50}, &hkCameraUpdate, "camera update",
+                                5);  // after mov eax,[relocated address]
+    g_shakeEval = game::hook(kShakeEvalVa, {0x81, 0xEC, 0xEC, 0x02, 0x00, 0x00}, &hkShakeEval, "camera shake");
+    g_thirdPerson = game::hook(kThirdPersonUpdateVa, {0x83, 0xEC, 0x70, 0xE8}, &hkThirdPerson, "third-person camera");
+    g_freeCamPitch = game::hookMid(kFreeCamCoreCallVa, {0xE8, 0x75, 0xD1, 0xFF, 0xFF}, &freeCamPitch, "vehicle camera");
 
-    // push ebp ; mov ebp,esp ; and esp,-16 ; sub esp,0xF4
-    static const uint8_t mainView[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81, 0xEC, 0xF4, 0x00, 0x00, 0x00};
-    // mov eax,[esp+4] ; mov edx,[eax+0x478] ; mov [edx+0x70],ecx
-    static const uint8_t renderBegin[] = {0x8B, 0x44, 0x24, 0x04, 0x8B, 0x90, 0x78, 0x04, 0x00, 0x00, 0x89, 0x4A, 0x70};
-    // push ebx ; mov ebx,[esp+0xC] ; push edi ; test ebx,ebx
-    static const uint8_t resize[] = {0x53, 0x8B, 0x5C, 0x24, 0x0C, 0x57, 0x85, 0xDB};
-    // sub esp,0x2EC
-    static const uint8_t shakeEval[] = {0x81, 0xEC, 0xEC, 0x02, 0x00, 0x00};
-    // sub esp,0x70 ; call ...
-    static const uint8_t thirdPerson[] = {0x83, 0xEC, 0x70, 0xE8};
-
-    g_mainViewSetup = hookChecked(kMainViewSetupVa, mainView, reinterpret_cast<void*>(&hkMainViewSetup), "main view setup");
-    g_renderBegin = hookChecked(kRenderBeginVa, renderBegin, reinterpret_cast<void*>(&hkRenderBegin), "render_begin");
-    g_swapchainResize = hookChecked(kSwapchainResizeVa, resize, reinterpret_cast<void*>(&hkSwapchainResize), "swapchain resize");
-    g_shakeEval = hookChecked(kShakeEvalVa, shakeEval, reinterpret_cast<void*>(&hkShakeEval), "camera shake");
-    g_thirdPerson = hookChecked(kThirdPersonUpdateVa, thirdPerson, reinterpret_cast<void*>(&hkThirdPerson), "third-person camera");
-    bool uiPass = hud::installEngineHook();
-    // call FUN_006d7180
-    static const uint8_t freeCamCall[] = {0xE8, 0x75, 0xD1, 0xFF, 0xFF};
-    if (memcmp(at<uint8_t>(kFreeCamCoreCallVa), freeCamCall, sizeof freeCamCall) == 0)
-        g_freeCamPitch = safetyhook::create_mid(at<void>(kFreeCamCoreCallVa), &freeCamPitch);
-    else
-        LOG("vehicle camera at %p does not match the expected bytes; not hooked", at<void>(kFreeCamCoreCallVa));
-    bool wndProc = mouse::install();
-    // mov eax,[camera target handle] ; sub esp,0x6C ; push esi ; push eax
-    static const uint8_t cameraUpdate[] = {0x83, 0xEC, 0x6C, 0x56, 0x50};
-    if (*at<uint8_t>(kCameraUpdateVa) == 0xA1 && memcmp(at<uint8_t>(kCameraUpdateVa) + 5, cameraUpdate, sizeof cameraUpdate) == 0)
-        g_cameraUpdate = safetyhook::create_inline(at<void>(kCameraUpdateVa), reinterpret_cast<void*>(&hkCameraUpdate));
-    else
-        LOG("camera update at %p does not match the expected bytes; not hooked", at<void>(kCameraUpdateVa));
-
-    LOG("Engine hooks: main view setup %s, render_begin %s, swapchain resize %s, camera shake %s, third-person camera %s, "
-        "UI pass %s, camera update %s, window procedure %s, vehicle camera %s",
-        g_mainViewSetup ? "ok" : "FAILED", g_renderBegin ? "ok" : "FAILED", g_swapchainResize ? "ok" : "FAILED",
-        g_shakeEval ? "ok" : "FAILED", g_thirdPerson ? "ok" : "FAILED", uiPass ? "ok" : "FAILED",
-        g_cameraUpdate ? "ok" : "FAILED", wndProc ? "ok" : "FAILED", g_freeCamPitch ? "ok" : "FAILED");
+    LOG("Camera hooks: main view setup %s, render_begin %s, swapchain resize %s, camera update %s, shake %s, "
+        "third-person %s, vehicle %s",
+        ok(g_mainViewSetup), ok(g_renderBegin), ok(g_swapchainResize), ok(g_cameraUpdate), ok(g_shakeEval),
+        ok(g_thirdPerson), ok(g_freeCamPitch));
     return g_mainViewSetup && g_renderBegin && g_swapchainResize;
 }
 

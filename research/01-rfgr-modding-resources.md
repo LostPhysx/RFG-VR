@@ -13,7 +13,7 @@ Legend. **Relevance** is relevance to a 6-DOF OpenXR VR mod (High / Med / Low). 
    - **Steam** `rfg.exe` SHA-256 `0d52039e7f2d3f25a4be52a2aba83919456fb3f00e52e75051726247471a2df4`. **This matches our local `game/rfg.exe`** (verified with sha256sum). Sledge notes this exe did not change between Steam builds 3121288 (2018-09-20) and 10642344 (2023-02-26).
    - **GOG** `rfg.exe` SHA-256 `7a82d2d0f425af5e75d8ffbce12fac53eb5ca9cd812731ccf5a29697e906af0e`.
    - Reconstructor and RFGRHook target **GOG only**. The Terraform community patch ("Unification feature: converts Steam version to GOG") xdelta-patches the Steam exe into the GOG one. **Sledge (Aug-Sep 2026, active) has a dual `OFFSET(gog, steam)` table.** That table is the best source of Steam-build addresses for our exe. RSL1 used older 2018 Steam addresses, so treat its raw numbers as stale.
-3. **Debug symbols exist.** Steam originally shipped `rfg.pdb` in the game folder in July 2018 (FearLess CE forum: "Just delete the rfg.pdb located in the RFG DIR"). Our current install has no PDB; the exe only carries the path string `...\win32\steam\master\rfg.pdb`. RFGRHook's author says their work was "only possible thanks to the debugging symbols available for the game". **The Terraform patch repo contains `z_pdbs.7z` with `gog\rfg.pdb` and `steam\rfg.pdb`** (~116 MB each, dated 2023-02-16), but the archive is **AES-encrypted** (7z `7zAES`). The password is not public, so ask on the FactionFiles Discord. That repo's identifier names (e.g. the IDA-style anonymous struct `$E92AFFDEE62810D3128575A938105420`, `keen::graphics::beginFrame(keen::GraphicsSystem*, keen::RenderSwapChain*)`) come from PDB type info. Getting a PDB whose GUID matches our exe would make the RE side of the project much easier.
+3. **Debug symbols exist.** Steam originally shipped `rfg.pdb` in the game folder in July 2018 (FearLess CE forum: "Just delete the rfg.pdb located in the RFG DIR"). Our current install has no PDB; the exe only carries the path string `...\win32\steam\master\rfg.pdb`. RFGRHook's author says their work was "only possible thanks to the debugging symbols available for the game". **The Terraform patch repo contains `z_pdbs.7z` with `gog\rfg.pdb` and `steam\rfg.pdb`** (~116 MB each, dated 2023-02-16), but the archive is **AES-encrypted** (7z `7zAES`). The password is not public. That repo's identifier names (e.g. the IDA-style anonymous struct `$E92AFFDEE62810D3128575A938105420`, `keen::graphics::beginFrame(keen::GraphicsSystem*, keen::RenderSwapChain*)`) come from PDB type info.
 4. **Camera access is already solved:**
    - Global `rfg_camera` object: RVA `0x19E3B50` on GOG. The Steam VA is `0x01DE4B50` (RVA `0x19E4B50`) per Sledge.
    - The struct is fully laid out in `RFGR_Types/rfg/Camera.h`. It has `real_pos`, `real_orient` (rvec/uvec/fvec matrix), `ideal_*`, `last_*`, `real_fov`, **`render_pos` / `render_orient`**, `m_near_clip_dist`, `m_far_clip_dist`, and a `camera_mode` enum that includes `CAMERA_FIRST_PERSON_MODE = 8`, `CAMERA_SLEW_MODE = 1` and `CAMERA_FREE_MODE = 0`.
@@ -170,7 +170,7 @@ Paths are relative to the repo root. It was cloned and read.
 
 | Resource | URL | Relevance | Status | Notes |
 |---|---|---|---|---|
-| **FactionFiles Discord** ("Red Faction Community Discord (FactionFiles)") | https://discord.gg/factionfiles (link from the SyncFaction and Terraform READMEs; not joined) | **High** | Active | The main RFG modding hub. moneyl, rast1234, arrowsv, Camo and Tervel1337 are here. Ask about the PDB password, `rl_camera` addresses on current builds, and prior VR/first-person work. |
+| **FactionFiles Discord** ("Red Faction Community Discord (FactionFiles)") | https://discord.gg/factionfiles (link from the SyncFaction and Terraform READMEs; not joined) | **High** | Active | The main RFG modding hub. moneyl, rast1234, arrowsv, Camo and Tervel1337 are here. |
 | FactionFiles.com | https://www.factionfiles.com · RFG tools https://www.factionfiles.com/ff.php?action=files&file_category=3 · Remaster mods https://www.factionfiles.com/ff.php?action=files&file_category=30 | Med | Active (uploads through Sep 2026) | Tools list: RFGR Hook, Gibbed Tools, Texture Editor Redux, Localization Tool, RFGR.SaveEditor, SyncFaction, RFGM.Archiver, Nanoforge v0.19.0. Also "Kinzie's Toy Box" (Volition's **Saints Row: The Third** SDK, not RFG). **RSL Legacy Collection** (id 7920, 2024-07-02): a bundle of all RSL1 scripts including **first-person camera**, flyer, telekinesis and graphics tweaks. **Steam only**, and it disables Reconstructor. **Steam Re-enabler** (rast1234, 2024-07-02) undoes the Terraform Steam→GOG conversion. |
 | **SyncFaction** (rast1234) | https://github.com/rfg-modding/SyncFaction · docs https://rfg-modding.github.io/SyncFaction/ | Med | Last commit 2026-06-07; release 2023-09-18 | Mod manager (.NET 6/WPF). Checks file hashes for both versions (`src/SyncFaction.Core/Hashes.cs` lists Steam/GOG hashes of rfg.exe, sw_api.dll, vpps; `rfg.pdb` appears commented out). Launches `launcher.exe` (Reconstructor) if present. Supports `.steam/` and `.gog/` version-specific mod folders (`docs/modding/version_specific.md`). Save locations: Steam `...\userdata\<id>\667720\remote\autocloud\save\keen_savegame_0_0.sav`, GOG `%LOCALAPPDATA%\GOG.com\Galaxy\Applications\51153410217180642\Storage\Shared\Files\autocloud\save\`. |
 | **Terraform Patch** (Camo) | https://github.com/CamoRF/Red-Faction-Guerrilla-Terraform-Patch | Med (for PDB / version) | v1.0753 HOTFIX (2023-06-10); `z_pdbs.7z` added 2025-08 | Community content and bug patch (mostly MP). Includes the "**Unification feature: converts Steam version to GOG**". `z_pdbs.7z` is **encrypted** and holds `gog/rfg.pdb` and `steam/rfg.pdb` (116 MB each, 2023-02-16). Also contains `z_tools/` (mTools, Volition Table File Editor, scripts) and `z_debug/`. The changelog shows internal source paths like `C:/unit4projects/rfg/root/code/volition/rfg/code/video_player/video_player.cpp` and a game log file `Red Faction Guerrilla Re-Mars-tered.log`. |
@@ -238,7 +238,7 @@ Paths are relative to the repo root. It was cloned and read.
 | Aid | URL / location | Status | Notes |
 |---|---|---|---|
 | **rfg.pdb (Steam, originally shipped)** | FearLess CE thread https://fearlessrevolution.com/viewtopic.php?t=7356&start=45 (post by l0wb1t, 2018-07-16) | Historical | The PDB sat in the game dir around CS 4496-4590 (July 2018). **Not in our current install.** Check SteamDB depot history or old manifests (`DepotDownloader` with an older manifest) to recover it for our exe. The GUID must match our exe's CodeView record. |
-| **Encrypted PDBs (GOG + Steam)** | Terraform repo `z_pdbs.7z` | Available, password needed | Ask Camo, moneyl or arrowsv on the FactionFiles Discord. |
+| **Encrypted PDBs (GOG + Steam)** | Terraform repo `z_pdbs.7z` | Password-protected, not public | Not used |
 | Community struct and function databases | RFGR_Types, Sledge `src/patch/rfg/*.hpp`, Reconstructor `Functions.h`, RSL1 `FunctionManager.cpp` + `RFGR_Types*.h` | Available | No shared IDA/Ghidra database was found publicly. |
 | Cheat Engine tables | FearLess: https://fearlessrevolution.com/viewtopic.php?t=7359 (CT v1.0, tested on Steam v1.0) · trainer threads t=7361, t=7356 | Available | Health, ammo, etc. **No camera or FOV table was found.** Low value; we already have better camera data. |
 | Debug console command names | RFGRHook `Console.cpp` (~300 commands restored thanks to the PDB) | GOG | Likely includes camera, render and debug toggles (slew etc.). Worth reading for render debug switches. |
@@ -246,7 +246,7 @@ Paths are relative to the repo root. It was cloned and read.
 
 ---
 
-## 7. Concrete VR-relevant hook map (collected; all need verification on our Steam exe)
+## 7. VR-relevant hook map (collected; verified entries are in 00-local-findings.md)
 
 | Purpose | GOG | Steam (our exe) | Source |
 |---|---|---|---|
@@ -274,22 +274,3 @@ Paths are relative to the repo root. It was cloned and read.
 Observed GOG→Steam deltas are not constant (for example +0x330 for beginFrame and +0x1000 for camera data). **Do not extrapolate. Use Sledge's table, signatures, or the PDB.**
 
 ---
-
-## 8. Open questions / things to verify once the game is installed
-
-Our Steam copy at `game/` has hash `0d52039e...`, so the Steam column of Sledge applies.
-
-1. **PDB.** Can we get a `rfg.pdb` matching our exe's CodeView GUID/age? Options: SteamDB depot history for app 667720 (older manifest with the PDB), the Terraform `z_pdbs.7z` password (ask on Discord), or the GOG build plus its PDB. Decide whether to switch our dev target to GOG if only the GOG PDB is obtainable.
-2. Validate the `rfg_camera` layout at VA `0x01DE4B50` live. Check the offsets of `real_pos`/`real_orient`/`render_pos`/`render_orient`/`real_fov`/clip planes, and confirm **which pair the renderer consumes** (`render_*` vs `real_*`).
-3. Find `rl_camera::render_begin` and the `rl_camera` layout (`m_view_transform`, `m_projection_transform`, `m_use_pixel_aspect_ratio`) on the current Steam exe. RSL1's `0x137660` is from an older build, so search by string xref `rl_camera` or with RSL1's approach. Determine whether it is called once per frame (main view) or also for shadow and reflection cameras.
-4. How many scene renders per frame, and is there a clean "render main scene" function we can call twice (per eye)? Check `game_render_get_main_scene` (RSL1 `0x3C2920`), `m_scene_renderer_p`, and `keen::ImmediateRenderer::beginRenderPass`.
-5. Depth buffer: format (`RenderSwapChain::depthBufferFormat`), reversed-Z or not, and whether `pBackBufferDepthView` is the scene depth or only a final one. Needed for reprojection/depth submission (`XR_KHR_composition_layer_depth`).
-6. Screen-space effects that break in stereo: shadows (never fixed by 3DMigoto), SSAO, sun shafts, DOF, motion blur, HDR bloom, fog. Map them to `rl_*StateBlock`s (RSL1) so they can be toggled.
-7. HUD: can the scaleform-like `vint` UI be rendered to a separate RT for a VR quad layer? Pull the HUD and crosshair shader hashes from bo3b's 3DMigoto `d3dx.ini` / ShaderFixes and from No-HUD-No-Effects.
-8. Aspect ratio: does the engine (like the 1.6% ultrawide oversizing) assume symmetric frusta? Index FOV is asymmetric, so check whether the projection can be overridden directly.
-9. Does Reconstructor's `dinput8.dll` nag DLL or Sledge's launcher conflict with our injection method (proxy DLL vs launcher)? Decide on coexistence.
-10. 32-bit address space: exe is LARGE_ADDRESS_AWARE (00-local-findings). Measure headroom with two eye render targets at Index resolution plus the OpenXR runtime inside a 4 GB process.
-11. Aiming decoupling: find where the player's aim/fire direction comes from (camera fvec vs a separate aim vector). This is needed for controller-based aiming. Look at `free_mode_params`/`lookaround_mode_params`, `human` aim fields in Sledge `human.hpp`, and weapon fire functions.
-12. Confirm whether the first-person mode `CAMERA_FIRST_PERSON_MODE (8)` and `camera_start_first_person` (RSL1 `0x2C9AC0`) are functional leftovers (e.g. used by turrets) that could replace hand-rolled head attachment.
-13. Licensing: contact arrowsv (Sledge, rustfaction) and moneyl (RFGR_Types) about license terms before copying code. Reconstructor is MPL-2.0 (file-level copyleft) and RSL1 is GPL-2.0 (avoid copying code if our license differs).
-14. Check `Red Faction Guerrilla Re-Mars-tered.log` (the game's own log, mentioned in the Terraform changelog) for render and camera diagnostics.
